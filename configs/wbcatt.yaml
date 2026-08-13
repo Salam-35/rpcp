@@ -1,0 +1,33 @@
+_base_: base.yaml
+
+# WBCAtt: the largest concept benchmark here -> the main corruption sweeps and
+# the most stable concept-F1 / reliability-AUROC numbers.
+name: rpcp-wbcatt
+
+data:
+  name: wbcatt
+  root: data/WBCAtt
+  image_size: 224
+  batch_size: 64
+  eval_batch_size: 128
+  num_workers: 8
+  pin_memory: true
+  augment: true
+
+model:
+  backbone: resnet34
+  pretrained: true
+  class_head: linear
+
+optim:
+  lr: 0.0005
+  backbone_lr: 0.0001
+  epochs: 40
+  early_stopping_patience: 10
+  amp: true
+
+reliability:
+  warmup_epochs: 5
+  mid_epochs: 12
+  update_every: 1
+  n_folds: 4

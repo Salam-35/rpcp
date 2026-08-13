@@ -1,0 +1,36 @@
+_base_: base.yaml
+
+# Fast, dependency-free benchmark used for smoke tests and CI.
+# The clean prior is known exactly, so corruption masks are exact.
+name: rpcp-synthetic
+
+data:
+  name: synthetic
+  image_size: 32
+  batch_size: 64
+  augment: false
+  synthetic:
+    n_train: 1200
+    n_val: 300
+    n_test: 300
+    n_classes: 3
+    n_concepts: 8
+    image_size: 32
+    concept_visibility: 0.9
+    pixel_noise: 0.12
+    prior_sharpness: 0.8
+    class_shortcut: 0.0
+    seed: 0
+
+model:
+  backbone: simple_cnn
+  use_attention: true
+
+optim:
+  lr: 0.002
+  epochs: 12
+
+reliability:
+  warmup_epochs: 3
+  mid_epochs: 5
+  update_every: 1

@@ -1,0 +1,103 @@
+# Shared defaults. Dataset configs inherit via `_base_: base.yaml`.
+name: rpcp
+output_dir: runs
+seed: 0
+device: auto
+
+data:
+  name: synthetic
+  image_size: 224
+  batch_size: 32
+  eval_batch_size: 64
+  num_workers: 0
+  augment: true
+  val_fraction: 0.15
+  test_fraction: 0.15
+  audit_fraction: 0.0
+  split_seed: 0
+
+model:
+  backbone: resnet18
+  pretrained: false
+  in_channels: 3
+  use_attention: true
+  concept_hidden_dim: 0
+  dropout: 0.0
+  class_head: linear
+  attention_temperature: 1.0
+
+priors:
+  source: dataset          # dataset | file
+  laplace_smoothing: 0.001
+  clip_min: 0.001
+  clip_max: 0.999
+  n_synthetic_sources: 0
+  synthetic_source_noise: 0.08
+  blend_alpha: 0.0         # Delta sweep (plan 6.4)
+  blend_source: 0
+  blend_target: 1
+  corruption:
+    mode: none             # none|uniform|background_collapse|class_swap|adversarial_flip|llm_bias
+    alpha: 0.0
+    fraction: 0.3
+    seed: 0
+    llm_bias_strength: 0.6
+    tolerance: 0.001
+
+reliability:
+  mode: none               # none|unsupervised|multi_source|audit|multi_rater|oracle
+  w0: 1.0
+  w1: 6.0          # external agreement outweighs the self-confirming residual
+  w2: 4.0
+  w3: 3.0
+  w4: 3.0
+  learnable_weights: false
+  ema_gamma: 0.7
+  update_every: 1
+  warmup_epochs: 5
+  mid_epochs: 10
+  min_reliability: 0.05
+  beta_a0: 2.0             # Beta(2,2): no extreme trust without evidence
+  beta_b0: 2.0
+  audit_beta: 5.0
+  audit_tolerance: 0.05
+  agreement_center: 0.5
+  source_alpha: 8.0
+  residual_scale: 1.0
+  instability_scale: 1.0
+  use_crossfit: true
+  n_folds: 2
+
+loss:
+  lambda_cls: 1.0
+  lambda_match: 0.5
+  lambda_prior: 1.0
+  lambda_ent: 0.05
+  lambda_r: 0.01
+  lambda_concept: 0.0      # >0 only for the supervised-CBM upper bound
+  prior_loss: bernoulli    # bernoulli (R-PCP-BernKL) | pcp_kl (R-PCP-PCPKL)
+  prior_reduction: mean
+  normalize_prior_by_reliability: true
+  match_temperature: 1.0
+  match_reliability_weighted: false
+  entropy_on_attention: true
+  entropy_on_concepts: true
+  class_mean_momentum: 0.9
+
+optim:
+  optimizer: adamw
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 30
+  scheduler: cosine
+  grad_clip: 5.0
+  amp: false
+  early_stopping_patience: null
+
+eval:
+  concept_threshold: 0.5
+  n_calibration_bins: 15
+  monitor: val/class_macro_f1   # never select on concept labels: they are evaluation-only
+  monitor_mode: max
+  save_checkpoints: true
+  save_reliability_history: true

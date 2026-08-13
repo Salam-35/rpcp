@@ -1,0 +1,29 @@
+_base_: base.yaml
+
+# Derm7pt: external validation. Official splits in the manifest are respected.
+name: rpcp-derm7pt
+
+data:
+  name: derm7pt
+  root: data/derm7pt
+  image_size: 224
+  batch_size: 32
+  num_workers: 4
+  augment: true
+
+model:
+  backbone: resnet18
+  pretrained: true
+  dropout: 0.1
+
+optim:
+  lr: 0.0003
+  backbone_lr: 0.00005
+  epochs: 50
+  early_stopping_patience: 12
+
+reliability:
+  warmup_epochs: 8
+  mid_epochs: 16
+  update_every: 2
+  n_folds: 3

@@ -1,0 +1,32 @@
+_base_: base.yaml
+
+# LIDC-IDRI: grayscale nodule patches with multi-radiologist attributes.
+# Evidence Mode D lives here (reliability.mode: multi_rater).
+name: rpcp-lidc
+
+data:
+  name: lidc
+  root: data/LIDC
+  image_size: 64
+  batch_size: 64
+  num_workers: 4
+  augment: true
+
+model:
+  backbone: resnet18
+  pretrained: false
+  in_channels: 1
+  class_head: linear
+
+optim:
+  lr: 0.0005
+  epochs: 40
+  early_stopping_patience: 10
+
+reliability:
+  mode: multi_rater
+  warmup_epochs: 5
+  mid_epochs: 12
+  update_every: 1
+  n_folds: 4
+  w1: 3.0            # trust the natural inter-rater agreement signal
