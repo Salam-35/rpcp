@@ -137,6 +137,8 @@ class ManifestConceptDataset(ConceptDataset):
 
         path = self.image_paths[index]
         if not path.exists():
+            path = _resolve_case_insensitive(path) or path
+        if not path.exists():
             raise FileNotFoundError(f"Image referenced by the manifest is missing: {path}")
         with Image.open(path) as handle:
             image = handle.convert("L" if self.grayscale else "RGB")
@@ -152,3 +154,27 @@ class ManifestConceptDataset(ConceptDataset):
             name: np.flatnonzero(self.split_labels == name)
             for name in np.unique(self.split_labels)
         }
+
+
+def _resolve_case_insensitive(path: Path) -> Path | None:
+    """Resolve a path whose manifest casing differs from the filesystem casing.
+
+    Derm7pt metadata contains paths such as ``FCl/Fcl068.jpg`` while some
+    extracted archives contain ``FCL/...``.  That works accidentally on
+    case-insensitive macOS volumes but fails on Linux/Kaggle.
+    """
+    current = Path(path.anchor) if path.is_absolute() else Path(".")
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    for part in parts:
+        candidate = current / part
+        if candidate.exists():
+            current = candidate
+            continue
+        if not current.exists() or not current.is_dir():
+            return None
+        part_lower = part.lower()
+        matches = [child for child in current.iterdir() if child.name.lower() == part_lower]
+        if not matches:
+            return None
+        current = matches[0]
+    return current
