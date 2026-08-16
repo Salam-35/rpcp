@@ -39,11 +39,9 @@ def parse_methods(values: list[str]) -> list[str]:
     """
     methods: list[str] = []
     for value in values:
-        cleaned = value.strip()
-        if cleaned.startswith("[") and cleaned.endswith("]"):
-            cleaned = cleaned[1:-1]
+        cleaned = value.strip().lstrip("[").rstrip("]")
         for part in cleaned.split(","):
-            method = part.strip()
+            method = part.strip().lstrip("[").rstrip("]")
             if method:
                 methods.append(method)
     return methods
