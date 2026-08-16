@@ -14,7 +14,7 @@
 The class differs from the pseudocode in exactly two respects, both deliberate:
 reliability is *estimated* during Phase 1 but only *applied* from Phase 2 (so a
 noisy first estimate cannot wreck the warm-started model), and the evidence is
-computed on held-out data by default (plan 4.5).
+computed on held-out datasets by default (plan 4.5).
 """
 
 from __future__ import annotations
@@ -216,7 +216,7 @@ class RPCPTrainer:
         return self.finalize()
 
     def train_one_epoch(self, epoch: int) -> dict[str, float]:
-        """One pass over the training data (Phase 0/1: ``r = 1``; Phase 2: weighted)."""
+        """One pass over the training datasets (Phase 0/1: ``r = 1``; Phase 2: weighted)."""
         self.model.train()
         use_reliability = self.schedule.use_reliability(epoch)
         reliability = self.reliability_module() if use_reliability else None

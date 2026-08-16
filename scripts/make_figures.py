@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     audit_results = args.results_dir / "audit_budget" / "results.csv"
     if audit_results.exists():
         frame = pd.read_csv(audit_results)
-        aggregated = frame.groupby("data.audit_fraction").agg(
+        aggregated = frame.groupby("datasets.audit_fraction").agg(
             concept_mean=(args.metric, "mean"),
             concept_std=(args.metric, "std"),
             auroc_mean=("reliability/auroc", "mean"),

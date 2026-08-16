@@ -1,4 +1,4 @@
-"""End-to-end smoke tests: data -> priors -> training -> evaluation -> figures."""
+"""End-to-end smoke tests: datasets -> priors -> training -> evaluation -> figures."""
 
 from __future__ import annotations
 

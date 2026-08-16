@@ -80,7 +80,7 @@ def _arrow(axis: Any, start: _Box, start_side: str, end: _Box, end_side: str) ->
 
 
 def plot_method_overview(path: str | Path | None = None) -> Any:
-    """Render the R-PCP data/loss flow, emphasising per-entry prior weighting."""
+    """Render the R-PCP datasets/loss flow, emphasising per-entry prior weighting."""
     use_paper_style()
     figure, axis = plt.subplots(figsize=(9.5, 4.6))
     axis.set_xlim(0, 100)

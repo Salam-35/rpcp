@@ -6,7 +6,7 @@ name: rpcp-wbcatt
 
 data:
   name: wbcatt
-  root: data/WBCAtt
+  root: datasets/WBCAtt
   image_size: 224
   batch_size: 64
   eval_batch_size: 128

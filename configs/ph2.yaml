@@ -6,7 +6,7 @@ name: rpcp-ph2
 
 data:
   name: ph2
-  root: data/PH2
+  root: datasets/PH2
   manifest: null            # defaults to <root>/manifest.csv
   image_size: 224
   batch_size: 16

@@ -6,7 +6,7 @@ corrupted prior that the model successfully over-fitted looks reliable.  Two
 remedies are implemented here:
 
 ``held_out``
-    Estimate ``p_bar`` on data the current model never trained on (the
+    Estimate ``p_bar`` on datasets the current model never trained on (the
     validation split, or folds of the training split held out at estimation
     time).  Cheap; used by default.
 
@@ -132,7 +132,7 @@ def fold_class_means(
 def estimate_instability(fold_means: torch.Tensor) -> torch.Tensor:
     """Standard deviation of ``p_bar`` across folds/views -> ``(M, K)``.
 
-    High instability means the class mean itself is not pinned down by the data,
+    High instability means the class mean itself is not pinned down by the datasets,
     so the corresponding prior residual carries little information.
     """
     if fold_means.ndim != 3:

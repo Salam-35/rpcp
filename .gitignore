@@ -11,7 +11,7 @@ runs/
 runs_*/
 figures/
 figures_*/
-data/
+datasets/
 *.pt
 *.npy
 *.csv

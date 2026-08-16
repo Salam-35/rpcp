@@ -61,7 +61,7 @@ class ReliabilityEvidence:
         source_disagreement: Variance of the prior across sources.
         instability: Variance/std of the model class means across seeds,
             augmentations or folds.
-        prior_model_residual: ``|Pi_tilde - p_bar_heldout|`` from held-out data.
+        prior_model_residual: ``|Pi_tilde - p_bar_heldout|`` from held-out datasets.
     """
 
     agreement: torch.Tensor | None = None
@@ -315,7 +315,7 @@ def build_reliability_module(
         case ReliabilityMode.AUDIT:
             if priors.audit is None:
                 raise ValueError(
-                    "reliability.mode='audit' requires an audit split; set data.audit_fraction > 0"
+                    "reliability.mode='audit' requires an audit split; set datasets.audit_fraction > 0"
                 )
             evidence.agreement = reliability_from_audit(
                 priors.observed,

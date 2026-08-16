@@ -5,7 +5,7 @@ name: rpcp-derm7pt
 
 data:
   name: derm7pt
-  root: data/derm7pt
+  root: datasets/derm7pt
   image_size: 224
   batch_size: 32
   num_workers: 4

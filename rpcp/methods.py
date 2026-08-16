@@ -73,7 +73,7 @@ ABLATIONS: dict[str, dict[str, Any]] = {
     "2-residual-only": {
         **METHODS["r-pcp"],
         "reliability.w3": 0.0,  # no instability term
-        "reliability.use_crossfit": False,  # residual measured on training data
+        "reliability.use_crossfit": False,  # residual measured on training datasets
     },
     "3-crossfit": {**METHODS["r-pcp"], "reliability.use_crossfit": True},
     "4-source-disagreement-init": METHODS["r-pcp-multisource"],
@@ -101,7 +101,7 @@ def apply_method(
 
     Args:
         config: Base (dataset) configuration.
-        method: Key of :data:`METHODS` or :data:`ABLATIONS`.
+        method: Key of :datasets:`METHODS` or :datasets:`ABLATIONS`.
         extra: Additional dotted overrides applied after the preset.
         tag: Run tag; defaults to the method name.
 

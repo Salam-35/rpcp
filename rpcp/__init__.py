@@ -2,7 +2,7 @@
 
 Reference implementation of the paper plan:
 
-* :mod:`rpcp.data` -- datasets, class-level prior tables, controlled corruption;
+* :mod:`rpcp.datasets` -- datasets, class-level prior tables, controlled corruption;
 * :mod:`rpcp.models` -- backbone, concept predictor, reliability module;
 * :mod:`rpcp.losses` -- ``L_cls``, ``L_match``, ``L_prior``, ``L_ent``, ``R(r)``;
 * :mod:`rpcp.training` -- phased trainer, cross-fitting, class means;

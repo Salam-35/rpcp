@@ -11,7 +11,7 @@ __all__ = ["CalibrationCurve", "brier_score", "expected_calibration_error", "rel
 
 @dataclass(slots=True)
 class CalibrationCurve:
-    """Binned calibration curve (the data behind a reliability diagram)."""
+    """Binned calibration curve (the datasets behind a reliability diagram)."""
 
     bin_edges: np.ndarray
     bin_confidence: np.ndarray

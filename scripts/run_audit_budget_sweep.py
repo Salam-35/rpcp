@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         base=base, output_dir=output_dir, methods=["r-pcp-audit"], seeds=args.seeds
     )
     frame = runner.run(
-        "data.audit_fraction",
+        "datasets.audit_fraction",
         args.budgets,
         extra_overrides={
             "priors.corruption.mode": args.mode,
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     logger.info("Sweep complete: %d runs -> %s", len(frame), runner.save())
 
-    aggregated = frame.groupby("data.audit_fraction").agg(
+    aggregated = frame.groupby("datasets.audit_fraction").agg(
         concept_mean=("test/concept_macro_f1", "mean"),
         concept_std=("test/concept_macro_f1", "std"),
         auroc_mean=("reliability/auroc", "mean"),

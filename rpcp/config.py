@@ -139,7 +139,7 @@ class CorruptionConfig:
 class PriorConfig:
     """How the (possibly corrupted) prior table is built."""
 
-    source: str = "dataset"  # dataset | file | multi_source
+    source: str = "datasets"  # dataset | file | multi_source
     path: str | None = None
     multi_source_paths: list[str] = field(default_factory=list)
     n_synthetic_sources: int = 0

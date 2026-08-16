@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 
 def run_experiment(config: ExperimentConfig) -> TrainingResult:
-    """Build data, priors and model from a config, then train and evaluate.
+    """Build datasets, priors and model from a config, then train and evaluate.
 
     This is the single entry point shared by ``scripts/train.py`` and every
     sweep script, so a sweep cell is guaranteed to run the same code path as a
