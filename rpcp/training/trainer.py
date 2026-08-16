@@ -80,12 +80,20 @@ class TrainingResult:
     prior_delta: float
     run_dir: Path
 
-    def summary(self) -> dict[str, float]:
-        out: dict[str, float] = {}
+    def summary(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         out.update(self.val.as_dict("val/"))
         out.update(self.test.as_dict("test/"))
         out.update(self.reliability.as_dict())
         out["prior/delta"] = self.prior_delta
+        out["thresholds"] = {
+            "concept": self.config.eval.concept_threshold,
+            "reliability_detection": self.config.eval.concept_threshold,
+            "reliability_hard": self.config.reliability.hard_threshold,
+            "reliability_min": self.config.reliability.min_reliability,
+            "reliability_max": self.config.reliability.max_reliability,
+            "n_calibration_bins": self.config.eval.n_calibration_bins,
+        }
         return out
 
 
