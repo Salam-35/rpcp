@@ -207,6 +207,7 @@ class LossConfig:
     #: per-image concept label touches training.
     lambda_concept: float = 0.0
     prior_loss: PriorLossType = PriorLossType.BERNOULLI
+    prior_repair: str = "none"  # none | background
     prior_reduction: str = "mean"  # "sum" is the plan's literal objective
     normalize_prior_by_reliability: bool = True
     concept_groups: list[list[int]] | None = None

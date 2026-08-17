@@ -144,10 +144,21 @@ class CompositeObjective(nn.Module):
         # Classes absent from both batch and history contribute nothing.
         column_mask = estimate.column_mask(priors.shape[0])
         weights = column_mask if weights is None else weights * column_mask
+        prior_target = priors
+        prior_weights = weights
+        if self.config.prior_repair == "background" and reliability is not None:
+            # Replace untrusted class-specific entries with the concept's
+            # class-agnostic prevalence instead of merely downweighting them.
+            r = reliability.to(device)
+            rho = priors.mean(dim=1, keepdim=True)
+            prior_target = r * priors + (1.0 - r) * rho
+            prior_weights = column_mask
+        elif self.config.prior_repair != "none":
+            raise ValueError(f"Unknown loss.prior_repair='{self.config.prior_repair}'")
 
         loss_cls = self.classification(output.class_logits, labels)
         loss_match = self.matching(output.concept_probs, priors, labels, reliability)
-        loss_prior = self.prior_loss(priors, estimate.means, weights)
+        loss_prior = self.prior_loss(prior_target, estimate.means, prior_weights)
         entropy_terms = self.entropy(output.concept_probs, output.attention)
         penalty = (
             torch.zeros((), device=device)

@@ -76,6 +76,7 @@ loss:
   lambda_r: 0.01
   lambda_concept: 0.0      # >0 only for the supervised-CBM upper bound
   prior_loss: bernoulli    # bernoulli (R-PCP-BernKL) | pcp_kl (R-PCP-PCPKL)
+  prior_repair: none       # none | background
   prior_reduction: mean
   normalize_prior_by_reliability: true
   match_temperature: 1.0
