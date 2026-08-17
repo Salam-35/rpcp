@@ -116,6 +116,7 @@ class CompositeObjective(nn.Module):
         *,
         reliability: torch.Tensor | None = None,
         reliability_penalty: torch.Tensor | None = None,
+        repair_prior: torch.Tensor | None = None,
         update_class_means: bool = True,
         concepts: torch.Tensor | None = None,
         concept_mask: torch.Tensor | None = None,
@@ -129,6 +130,7 @@ class CompositeObjective(nn.Module):
             reliability: ``(M, K)`` weights ``r``; ``None`` == PCP (``r = 1``).
             reliability_penalty: Pre-computed ``R(r)`` (see
                 :meth:`rpcp.models.reliability.ReliabilityModule.penalty`).
+            repair_prior: Optional replacement table for ``loss.prior_repair='audit'``.
             update_class_means: Whether to advance the class-mean history.
             concepts: ``(B, M)`` per-image concept labels -- used *only* when
                 ``lambda_concept > 0`` (the supervised-CBM upper bound).
@@ -152,6 +154,28 @@ class CompositeObjective(nn.Module):
             r = torch.ones_like(priors) if reliability is None else reliability.to(device)
             rho = priors.mean(dim=1, keepdim=True)
             prior_target = r * priors + (1.0 - r) * rho
+            prior_weights = column_mask
+        elif self.config.prior_repair == "audit":
+            # Replace untrusted entries with a class-specific prevalence estimated
+            # on the held-out audit split.  With no reliability (PCP), r=1 makes
+            # this a no-op so multi-method runs can share the same override.
+            r = torch.ones_like(priors) if reliability is None else reliability.to(device)
+            if repair_prior is None:
+                if reliability is None:
+                    audit_target = priors
+                else:
+                    raise ValueError(
+                        "loss.prior_repair='audit' requires an audit prior; set "
+                        "data.audit_fraction > 0 and use an audit-capable method"
+                    )
+            else:
+                audit_target = repair_prior.to(device)
+            if audit_target.shape != priors.shape:
+                raise ValueError(
+                    f"repair_prior {tuple(audit_target.shape)} must match priors "
+                    f"{tuple(priors.shape)}"
+                )
+            prior_target = r * priors + (1.0 - r) * audit_target
             prior_weights = column_mask
         elif self.config.prior_repair != "none":
             raise ValueError(f"Unknown loss.prior_repair='{self.config.prior_repair}'")

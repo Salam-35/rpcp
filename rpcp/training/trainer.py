@@ -124,6 +124,7 @@ class RPCPTrainer:
 
         self.priors = priors.to("cpu")
         self.prior_table = self.priors.observed.to(self.device)
+        self.audit_prior = None if self.priors.audit is None else self.priors.audit.to(self.device)
 
         self.model = (
             model
@@ -262,6 +263,7 @@ class RPCPTrainer:
                     self.prior_table,
                     reliability=reliability,
                     reliability_penalty=penalty,
+                    repair_prior=self.audit_prior,
                     concepts=(
                         batch["concepts"].to(self.device)
                         if self.config.loss.lambda_concept > 0
