@@ -146,10 +146,10 @@ class CompositeObjective(nn.Module):
         weights = column_mask if weights is None else weights * column_mask
         prior_target = priors
         prior_weights = weights
-        if self.config.prior_repair == "background" and reliability is not None:
+        if self.config.prior_repair == "background":
             # Replace untrusted class-specific entries with the concept's
             # class-agnostic prevalence instead of merely downweighting them.
-            r = reliability.to(device)
+            r = torch.ones_like(priors) if reliability is None else reliability.to(device)
             rho = priors.mean(dim=1, keepdim=True)
             prior_target = r * priors + (1.0 - r) * rho
             prior_weights = column_mask
