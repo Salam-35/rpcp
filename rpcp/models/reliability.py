@@ -116,7 +116,8 @@ def beta_log_prior_penalty(
     ``Beta(5, 2)`` is optimistic (expert priors), ``Beta(1, 5)`` pessimistic
     (LLM-generated priors).
     """
-    r = reliability.clamp(eps, 1.0 - eps)
+    r = torch.nan_to_num(reliability, nan=0.5, posinf=1.0 - eps, neginf=eps)
+    r = r.clamp(eps, 1.0 - eps)
     distribution = torch.distributions.Beta(
         torch.tensor(float(a0), device=r.device),
         torch.tensor(float(b0), device=r.device),
@@ -190,7 +191,12 @@ class ReliabilityModule(nn.Module):
 
     def forward(self) -> torch.Tensor:
         """Current reliability, clamped (and optionally hard-thresholded)."""
-        r = self.reliability
+        r = torch.nan_to_num(
+            self.reliability,
+            nan=0.5,
+            posinf=self.config.max_reliability,
+            neginf=self.config.min_reliability,
+        )
         if self.config.hard_threshold is not None:
             r = (r >= self.config.hard_threshold).float()
         return r.clamp(self.config.min_reliability, self.config.max_reliability)
@@ -236,14 +242,19 @@ class ReliabilityModule(nn.Module):
         if self.frozen or evidence.is_empty():
             return self.reliability
         new = self.score(evidence.to(self.reliability.device))
+        if not torch.isfinite(new).all():
+            new = torch.nan_to_num(new, nan=0.5, posinf=1.0, neginf=0.0)
         gamma = self.config.ema_gamma if self.n_updates > 0 else 0.0
         self.reliability.copy_(gamma * self.reliability + (1.0 - gamma) * new)
+        self.reliability.nan_to_num_(nan=0.5, posinf=1.0, neginf=0.0)
         self.n_updates += 1
         return self.reliability
 
     @torch.no_grad()
     def set_reliability(self, value: torch.Tensor) -> None:
-        self.reliability.copy_(value.to(self.reliability.device).float())
+        copied = value.to(self.reliability.device).float()
+        copied = torch.nan_to_num(copied, nan=0.5, posinf=1.0, neginf=0.0)
+        self.reliability.copy_(copied)
 
     def penalty(self) -> torch.Tensor:
         """``R(r)`` -- the Beta log-prior regulariser."""

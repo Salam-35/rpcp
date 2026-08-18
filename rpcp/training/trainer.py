@@ -238,6 +238,7 @@ class RPCPTrainer:
 
         totals: dict[str, float] = {}
         n_batches = 0
+        skipped_batches = 0
         scaler = torch.amp.GradScaler(
             device=self.device.type, enabled=self.config.optim.amp and self.device.type == "cuda"
         )
@@ -277,6 +278,20 @@ class RPCPTrainer:
                     ),
                 )
 
+            if not torch.isfinite(losses.total):
+                skipped_batches += 1
+                logger.warning(
+                    "Skipping non-finite train batch at epoch %d: total=%s cls=%s match=%s prior=%s ent=%s",
+                    epoch,
+                    float(losses.total.detach().cpu()),
+                    float(losses.classification.detach().cpu()),
+                    float(losses.matching.detach().cpu()),
+                    float(losses.prior.detach().cpu()),
+                    float(losses.entropy.detach().cpu()),
+                )
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
+
             scaler.scale(losses.total).backward()
             if self.config.optim.grad_clip is not None:
                 scaler.unscale_(self.optimizer)
@@ -291,6 +306,8 @@ class RPCPTrainer:
             n_batches += 1
 
         metrics = {key: value / max(1, n_batches) for key, value in totals.items()}
+        if skipped_batches > 0:
+            metrics["train/skipped_nonfinite_batches"] = float(skipped_batches)
         audit_metrics = self.train_audit_anchor(scaler)
         metrics.update(audit_metrics)
         return metrics
@@ -313,6 +330,7 @@ class RPCPTrainer:
         reliability = self.reliability_module()
         total_loss = 0.0
         n_batches = 0
+        skipped_batches = 0
         self.model.train()
         for batch in self.loaders["audit"]:
             images = batch["image"].to(self.device, non_blocking=True)
@@ -343,6 +361,17 @@ class RPCPTrainer:
                 )
                 weighted = self.config.loss.lambda_audit_concept * loss
 
+            if not torch.isfinite(weighted):
+                skipped_batches += 1
+                logger.warning(
+                    "Skipping non-finite audit-anchor batch at epoch %d: loss=%s weighted=%s",
+                    self.state.epoch,
+                    float(loss.detach().cpu()),
+                    float(weighted.detach().cpu()),
+                )
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
+
             scaler.scale(weighted).backward()
             if self.config.optim.grad_clip is not None:
                 scaler.unscale_(self.optimizer)
@@ -356,13 +385,20 @@ class RPCPTrainer:
             n_batches += 1
 
         if n_batches == 0:
-            return {}
+            return (
+                {}
+                if skipped_batches == 0
+                else {"train/skipped_nonfinite_audit_batches": float(skipped_batches)}
+            )
         mean_loss = total_loss / n_batches
-        return {
+        metrics = {
             "train/loss_audit_concept": mean_loss,
             "train/loss_audit_concept_weighted": self.config.loss.lambda_audit_concept
             * mean_loss,
         }
+        if skipped_batches > 0:
+            metrics["train/skipped_nonfinite_audit_batches"] = float(skipped_batches)
+        return metrics
 
     def audit_concept_loss(
         self,
