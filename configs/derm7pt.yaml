@@ -12,18 +12,19 @@ data:
   augment: true
 
 model:
-  backbone: resnet18
+  backbone: densenet121
   pretrained: true
   dropout: 0.1
 
 optim:
-  lr: 0.0003
-  backbone_lr: 0.00005
-  epochs: 50
+  lr: 0.00005
+  backbone_lr: 0.000005
+  epochs: 30
+  grad_clip: 0.5
   early_stopping_patience: 12
 
 reliability:
   warmup_epochs: 8
-  mid_epochs: 16
+  mid_epochs: 14
   update_every: 2
-  n_folds: 3
+  n_folds: 1
