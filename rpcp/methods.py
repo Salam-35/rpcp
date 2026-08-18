@@ -49,13 +49,27 @@ METHODS: dict[str, dict[str, Any]] = {
         "priors.n_synthetic_sources": 5,
         "loss.lambda_concept": 0.0,
     },
-    # 6. R-PCP + small concept audit (Evidence Mode C).
+    # 6. Recommended audited R-PCP: audit reliability + prior repair +
+    # image-level audit concept anchors.
     "r-pcp-audit": {
         "reliability.mode": "audit",
         "data.audit_fraction": 0.1,
         "loss.lambda_concept": 0.0,
+        "loss.lambda_audit_concept": 1.0,
+        "loss.audit_concept_weighting": "inverse_reliability",
+        "loss.prior_repair": "audit",
+        "loss.match_reliability_weighted": True,
+        "loss.lambda_match": 0.0,
+        "model.class_head": "linear",
     },
-    # R-PCP + audit repair + image-level audit concept anchors.
+    # Plain audit calibration only. Kept as an ablation because it tends to know
+    # which priors are wrong without translating that into better concept/class learning.
+    "r-pcp-audit-plain": {
+        "reliability.mode": "audit",
+        "data.audit_fraction": 0.1,
+        "loss.lambda_concept": 0.0,
+    },
+    # Backwards-compatible explicit name for the anchored audited variant.
     "r-pcp-audit-anchor": {
         "reliability.mode": "audit",
         "data.audit_fraction": 0.1,
@@ -101,7 +115,7 @@ ABLATIONS: dict[str, dict[str, Any]] = {
     },
     "3-crossfit": {**METHODS["r-pcp"], "reliability.use_crossfit": True},
     "4-source-disagreement-init": METHODS["r-pcp-multisource"],
-    "5-audit-calibration": METHODS["r-pcp-audit"],
+    "5-audit-calibration": METHODS["r-pcp-audit-plain"],
     "6-pcp-kl-variant": {**METHODS["r-pcp"], "loss.prior_loss": "pcp_kl"},
     "7-no-entropy": {**METHODS["r-pcp"], "loss.lambda_ent": 0.0},
     "8-no-matching": {**METHODS["r-pcp"], "loss.lambda_match": 0.0},
