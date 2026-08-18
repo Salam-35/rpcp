@@ -238,7 +238,6 @@ class RPCPTrainer:
 
         totals: dict[str, float] = {}
         n_batches = 0
-        skipped_batches = 0
         scaler = torch.amp.GradScaler(
             device=self.device.type, enabled=self.config.optim.amp and self.device.type == "cuda"
         )
@@ -278,20 +277,6 @@ class RPCPTrainer:
                     ),
                 )
 
-            if not torch.isfinite(losses.total):
-                skipped_batches += 1
-                logger.warning(
-                    "Skipping non-finite train batch at epoch %d: total=%s cls=%s match=%s prior=%s ent=%s",
-                    epoch,
-                    float(losses.total.detach().cpu()),
-                    float(losses.classification.detach().cpu()),
-                    float(losses.matching.detach().cpu()),
-                    float(losses.prior.detach().cpu()),
-                    float(losses.entropy.detach().cpu()),
-                )
-                self.optimizer.zero_grad(set_to_none=True)
-                continue
-
             scaler.scale(losses.total).backward()
             if self.config.optim.grad_clip is not None:
                 scaler.unscale_(self.optimizer)
@@ -306,8 +291,6 @@ class RPCPTrainer:
             n_batches += 1
 
         metrics = {key: value / max(1, n_batches) for key, value in totals.items()}
-        if skipped_batches > 0:
-            metrics["train/skipped_nonfinite_batches"] = float(skipped_batches)
         audit_metrics = self.train_audit_anchor(scaler)
         metrics.update(audit_metrics)
         return metrics
@@ -330,7 +313,6 @@ class RPCPTrainer:
         reliability = self.reliability_module()
         total_loss = 0.0
         n_batches = 0
-        skipped_batches = 0
         self.model.train()
         for batch in self.loaders["audit"]:
             images = batch["image"].to(self.device, non_blocking=True)
@@ -361,17 +343,6 @@ class RPCPTrainer:
                 )
                 weighted = self.config.loss.lambda_audit_concept * loss
 
-            if not torch.isfinite(weighted):
-                skipped_batches += 1
-                logger.warning(
-                    "Skipping non-finite audit-anchor batch at epoch %d: loss=%s weighted=%s",
-                    self.state.epoch,
-                    float(loss.detach().cpu()),
-                    float(weighted.detach().cpu()),
-                )
-                self.optimizer.zero_grad(set_to_none=True)
-                continue
-
             scaler.scale(weighted).backward()
             if self.config.optim.grad_clip is not None:
                 scaler.unscale_(self.optimizer)
@@ -385,20 +356,13 @@ class RPCPTrainer:
             n_batches += 1
 
         if n_batches == 0:
-            return (
-                {}
-                if skipped_batches == 0
-                else {"train/skipped_nonfinite_audit_batches": float(skipped_batches)}
-            )
+            return {}
         mean_loss = total_loss / n_batches
-        metrics = {
+        return {
             "train/loss_audit_concept": mean_loss,
             "train/loss_audit_concept_weighted": self.config.loss.lambda_audit_concept
             * mean_loss,
         }
-        if skipped_batches > 0:
-            metrics["train/skipped_nonfinite_audit_batches"] = float(skipped_batches)
-        return metrics
 
     def audit_concept_loss(
         self,
@@ -446,7 +410,10 @@ class RPCPTrainer:
 
         instability = None
         if self.config.reliability.n_folds > 1:
-            split_name = "val" if holdout_key == "val" else "train"
+            # Must match `holdout_key`'s transform: `self.splits.train` carries
+            # the training augmentation, which would make `instability` partly
+            # a measurement of random crops/flips instead of the model.
+            split_name = "val" if holdout_key == "val" else "train_eval"
             split: TransformedSubset = getattr(self.splits, split_name)
             fold_means = fold_class_means(
                 self.model,
@@ -566,7 +533,13 @@ class RPCPTrainer:
 
         sign = 1.0 if self.config.eval.monitor_mode == "max" else -1.0
         score = sign * value
-        if score > self.state.best_score:
+        # `>=`, not `>`: on a tie, prefer the later epoch. Reliability weighting
+        # only activates in the WEIGHTED phase (see PhaseSchedule), so a tie
+        # against an earlier, un-weighted epoch should not keep that earlier
+        # checkpoint -- e.g. derm7pt's audit run tied val/class_macro_f1
+        # between epoch 0 and epoch 1, and `>` kept epoch 0, which had a
+        # *lower* concept AUROC (0.548 vs 0.486) than the epoch it lost to.
+        if score >= self.state.best_score:
             self.state.best_score = score
             self.state.best_metric = value
             self.state.best_epoch = epoch

@@ -49,6 +49,26 @@ LIDC_CONCEPTS: tuple[str, ...] = (
 ORDINAL_POSITIVE_THRESHOLD = 4.0
 MALIGNANCY_THRESHOLD = 3.0
 
+#: pylidc.Annotation attribute names for each concept. Most LIDC_CONCEPTS
+#: entries are already single lowercase words so `concept.replace("_", "")`
+#: happens to match, but "internal_structure" maps to the camelCase
+#: `internalStructure` on the pylidc Annotation object -- the naive
+#: `.replace("_", "")` gives "internalstructure", which does not exist, so
+#: `getattr(a, attribute, np.nan)` silently returned NaN for every rater on
+#: every nodule, making internal_structure a dead (always-0) concept by
+#: construction. Spelled out explicitly here so a future renamed/added
+#: concept fails loudly (KeyError) instead of silently going dead again.
+_PYLIDC_ATTRIBUTE_NAMES: dict[str, str] = {
+    "subtlety": "subtlety",
+    "sphericity": "sphericity",
+    "margin": "margin",
+    "lobulation": "lobulation",
+    "spiculation": "spiculation",
+    "texture": "texture",
+    "calcification": "calcification",
+    "internal_structure": "internalStructure",
+}
+
 
 def prepare_manifest(
     root: str | Path,
@@ -85,7 +105,8 @@ def prepare_manifest(
             bbox = reference.bbox()
             centre = bbox[2].start + (bbox[2].stop - bbox[2].start) // 2
             patch = volume[bbox[0], bbox[1], centre]
-            patch = (patch - patch.min()) / max(float(patch.ptp()), 1e-6)
+            # `ndarray.ptp()` was removed in NumPy 2.0; use the `np.ptp` function.
+            patch = (patch - patch.min()) / max(float(np.ptp(patch)), 1e-6)
             name = f"{scan.patient_id}_n{nodule_idx}.png"
             Image.fromarray((patch * 255).astype(np.uint8)).save(root / patch_dir / name)
 
@@ -94,7 +115,7 @@ def prepare_manifest(
                 "label": "malignant" if malignancy > MALIGNANCY_THRESHOLD else "benign",
             }
             for concept in LIDC_CONCEPTS:
-                attribute = concept.replace("_", "")
+                attribute = _PYLIDC_ATTRIBUTE_NAMES[concept]
                 scores = [
                     float(getattr(a, attribute, np.nan)) for a in nodule_annotations
                 ]

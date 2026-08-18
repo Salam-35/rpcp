@@ -81,6 +81,7 @@ class ClassMeanEstimator(nn.Module):
         momentum: Decay applied to the history each step (``0`` = batch only).
         min_count: Classes with less effective support than this are marked invalid.
         eps: Numerical floor for the denominator.
+        gradient_rescale: See :meth:`forward`.
     """
 
     def __init__(
@@ -91,6 +92,7 @@ class ClassMeanEstimator(nn.Module):
         momentum: float = 0.9,
         min_count: float = 1.0,
         eps: float = 1e-6,
+        gradient_rescale: bool = True,
     ) -> None:
         super().__init__()
         if not 0.0 <= momentum < 1.0:
@@ -100,6 +102,7 @@ class ClassMeanEstimator(nn.Module):
         self.momentum = momentum
         self.min_count = min_count
         self.eps = eps
+        self.gradient_rescale = gradient_rescale
         self.register_buffer("history_sum", torch.zeros(n_concepts, n_classes))
         self.register_buffer("history_count", torch.zeros(n_classes))
 
@@ -111,6 +114,21 @@ class ClassMeanEstimator(nn.Module):
         *,
         update: bool = True,
     ) -> ClassMeanEstimate:
+        """Compute ``p_bar`` for this batch's labels, blended with history.
+
+        With ``gradient_rescale`` (the default), the *forward value* of
+        ``means`` is exactly the momentum-blended estimate below, but the
+        *gradient* it passes back to ``concept_probs`` is rescaled so that
+        ``d(means)/d(sums)`` equals ``1/counts`` (a batch-only estimator)
+        instead of ``1/total_count``. Without this, at steady state the
+        history holds ``momentum/(1-momentum)`` times the batch count -- 9x at
+        the default ``momentum=0.9`` -- so ``d(means)/d(sums) = 1/total_count``
+        is diluted by that same factor, and ``L_prior``'s gradient through
+        ``p_bar`` (hence its effective strength relative to ``lambda_prior``)
+        silently shrinks as the history accumulates. The history still reduces
+        *variance* of the target value exactly as before; only the step size
+        of the gradient it produces is restored.
+        """
         sums, counts = batch_class_sums(concept_probs, labels, self.n_classes)
 
         history_sum = self.history_sum.to(sums.device) * self.momentum
@@ -119,6 +137,15 @@ class ClassMeanEstimator(nn.Module):
         total_sum = sums + history_sum.detach()
         total_count = counts + history_count.detach()
         means = total_sum / total_count.clamp_min(self.eps).unsqueeze(0)
+
+        if self.gradient_rescale:
+            # Straight-through rescale: `means - means.detach()` is exactly
+            # 0.0 in the forward pass (same tensor, values bit-identical), so
+            # this changes nothing numerically here; the multiply only alters
+            # the gradient that flows back through the subtraction.
+            scale = (total_count / counts.clamp_min(self.eps)).detach()
+            means = means.detach() + scale.unsqueeze(0) * (means - means.detach())
+
         means = means.clamp(self.eps, 1.0 - self.eps)
 
         if update:

@@ -171,6 +171,7 @@ def build_splits(config: DataConfig) -> SplitBundle:
 
     bundle = SplitBundle(
         train=TransformedSubset(dataset, indices["train"], train_transform),
+        train_eval=TransformedSubset(dataset, indices["train"], eval_transform),
         val=TransformedSubset(dataset, indices["val"], eval_transform),
         test=TransformedSubset(dataset, indices["test"], eval_transform),
         audit=(
@@ -203,7 +204,10 @@ def build_dataloaders(
             seed=seed,
         ),
         "train_eval": make_dataloader(
-            splits.train,
+            # Same images/order as `train`, deterministic transform: used to
+            # measure the model (held-out class-mean residual when
+            # `reliability.use_crossfit=False`), never to optimise it.
+            splits.train_eval,
             batch_size=config.eval_batch_size,
             shuffle=False,
             num_workers=config.num_workers,
@@ -287,7 +291,7 @@ def build_prior_bundle(
     )
 
     bundle.sources = _prior_sources(prior_cfg, bundle, corruption)
-    bundle.audit = _audit_prior(config, splits)
+    bundle.audit, bundle.audit_support = _audit_prior(config, splits)
     bundle.rater_agreement = _rater_agreement(splits)
     return bundle
 
@@ -346,21 +350,33 @@ def _prior_sources(
     return None
 
 
-def _audit_prior(config: ExperimentConfig, splits: SplitBundle) -> torch.Tensor | None:
+def _audit_prior(
+    config: ExperimentConfig, splits: SplitBundle
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Audit-split prevalence and its per-``(concept, class)`` support mask.
+
+    The support mask matters: with a small audit split (e.g. 10% of PH2's 40
+    melanoma cases), a rare class can easily draw zero audit examples, and
+    :func:`audit_prevalence` then falls back to a 0.5 placeholder for that
+    column. Discarding the mask -- as this used to do -- makes
+    :func:`reliability_from_audit` read that placeholder as "the prior and the
+    audit strongly disagree" and flag every entry in the column as unreliable,
+    from nothing but sampling noise.
+    """
     if splits.audit is None:
-        return None
+        return None, None
     if config.reliability.mode not in {ReliabilityMode.AUDIT, ReliabilityMode.ORACLE}:
         logger.info("Audit split present but reliability.mode=%s", config.reliability.mode)
     concepts = getattr(splits.audit, "concepts", None)
     if concepts is None:
-        return None
-    prevalence, _ = audit_prevalence(
+        return None, None
+    prevalence, support = audit_prevalence(
         concepts,
         splits.audit.labels,
         n_classes=splits.n_classes,
         smoothing=config.priors.laplace_smoothing,
     )
-    return prevalence
+    return prevalence, support
 
 
 def _rater_agreement(splits: SplitBundle) -> torch.Tensor | None:

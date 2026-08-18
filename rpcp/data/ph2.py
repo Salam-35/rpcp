@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from rpcp.data.manifest import ManifestConceptDataset
 from rpcp.utils.logging import get_logger
@@ -53,6 +54,7 @@ __all__ = [
     "annotation_report",
     "build_ph2",
     "concept_support",
+    "load_colour_mask",
     "prepare_manifest",
     "read_annotations",
 ]
@@ -623,3 +625,60 @@ def concept_support(dataset: ManifestConceptDataset) -> np.ndarray:
     """Number of positive annotations per concept (useful for sanity checks)."""
     assert dataset.concepts is not None
     return dataset.concepts.sum(axis=0)
+
+
+# --------------------------------------------------------------------------- #
+# Spatial (mask) supervision
+# --------------------------------------------------------------------------- #
+def load_colour_mask(
+    root: str | Path,
+    mask_cell: str,
+    *,
+    size: tuple[int, int] | None = None,
+) -> torch.Tensor | None:
+    """Load and union one manifest ``<colour>__mask`` cell into one ``(H, W)`` tensor.
+
+    ``prepare_manifest(..., include_masks=True)`` records, for each of the six
+    colour concepts, a ``;``-separated list of per-region ROI mask paths (a
+    case can have several regions of the same colour). This loads every listed
+    ``.bmp``, binarises it (``> 0``), and takes the pixel-wise union -- free,
+    per-image, spatial ground truth for exactly the concepts (colour
+    attributes) a class-level-prior-only model would otherwise have no way to
+    localise. See ``rpcp.losses.attention_supervision.attention_mask_loss`` for
+    how to turn this into a training signal against a model's concept
+    attention maps.
+
+    Args:
+        root: PH2 dataset root (mask paths in the manifest are relative to it).
+        mask_cell: The raw ``<colour>__mask`` manifest cell for one row.
+        size: If given, nearest-neighbour resize to ``(H, W)`` (e.g. to match
+            a model's attention-map resolution). Nearest-neighbour keeps the
+            mask binary; any other interpolation mode would not.
+
+    Returns:
+        An ``(H, W)`` float tensor in ``{0, 1}``, or ``None`` when ``mask_cell``
+        is empty. ``None`` means *no annotation available* for this
+        (image, concept) pair -- PH2 does not ship negative masks, so a caller
+        must exclude these rows via a validity mask rather than treating a
+        missing mask as "colour absent everywhere".
+    """
+    from PIL import Image
+
+    root = Path(root)
+    mask: np.ndarray | None = None
+    for relpath in str(mask_cell).split(";"):
+        relpath = relpath.strip()
+        if not relpath:
+            continue
+        with Image.open(root / relpath) as handle:
+            array = np.asarray(handle.convert("L"), dtype=np.float32)
+        region = array > 0
+        mask = region if mask is None else (mask | region)
+    if mask is None:
+        return None
+    tensor = torch.from_numpy(mask.astype(np.float32))
+    if size is not None and tuple(tensor.shape) != tuple(size):
+        tensor = torch.nn.functional.interpolate(
+            tensor[None, None], size=size, mode="nearest"
+        )[0, 0]
+    return tensor

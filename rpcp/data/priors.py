@@ -50,6 +50,13 @@ class PriorBundle:
         sources: ``(S, M, K)`` optional stack of prior sources (Evidence Mode B).
         audit: ``(M, K)`` optional prevalence estimated on the audit split
             (Evidence Mode C).
+        audit_support: ``(M, K)`` boolean, ``True`` where ``audit`` had at least
+            one audit-split example of that class (see :func:`audit_prevalence`).
+            A small audit split can easily draw zero examples of a rare class,
+            in which case ``audit`` silently falls back to 0.5 for that column;
+            without this mask, :func:`reliability_from_audit` reads that
+            placeholder as "prior and audit strongly disagree" and flags every
+            entry in the column as unreliable from pure sampling noise.
         rater_agreement: ``(M, K)`` optional inter-rater agreement (Mode D).
     """
 
@@ -58,6 +65,7 @@ class PriorBundle:
     clean_mask: torch.Tensor | None = None
     sources: torch.Tensor | None = None
     audit: torch.Tensor | None = None
+    audit_support: torch.Tensor | None = None
     rater_agreement: torch.Tensor | None = None
     concept_names: list[str] = field(default_factory=list)
     class_names: list[str] = field(default_factory=list)
@@ -65,7 +73,7 @@ class PriorBundle:
     def __post_init__(self) -> None:
         if self.observed.ndim != 2:
             raise ValueError(f"observed prior must be (M, K), got {tuple(self.observed.shape)}")
-        for name in ("clean", "audit", "rater_agreement"):
+        for name in ("clean", "audit", "audit_support", "rater_agreement"):
             value = getattr(self, name)
             if value is not None and value.shape != self.observed.shape:
                 raise ValueError(f"{name} shape {tuple(value.shape)} != {tuple(self.shape)}")
@@ -99,6 +107,7 @@ class PriorBundle:
             clean_mask=move(self.clean_mask),
             sources=move(self.sources),
             audit=move(self.audit),
+            audit_support=move(self.audit_support),
             rater_agreement=move(self.rater_agreement),
             concept_names=list(self.concept_names),
             class_names=list(self.class_names),

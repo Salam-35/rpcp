@@ -23,8 +23,11 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from rpcp.config import OptimConfig, ReliabilityConfig
+from rpcp.utils.logging import get_logger
 
 __all__ = ["Phase", "PhaseSchedule", "build_optimizer", "build_scheduler", "ema_update"]
+
+logger = get_logger(__name__)
 
 
 class Phase(StrEnum):
@@ -55,8 +58,16 @@ class PhaseSchedule:
     def __post_init__(self) -> None:
         if self.mid_epochs < self.warmup_epochs:
             raise ValueError("mid_epochs must be >= warmup_epochs")
-        if self.total_epochs < self.mid_epochs:
-            raise ValueError("total_epochs must be >= mid_epochs")
+        if self.total_epochs > 0 and self.mid_epochs >= self.total_epochs:
+            # epoch indices run 0..total_epochs-1, and phase(e) only returns
+            # WEIGHTED once e >= mid_epochs -- so mid_epochs == total_epochs
+            # (permitted by the old `<=` check here) means the WEIGHTED phase
+            # never runs. The trainer would then quietly train as plain PCP
+            # while its config, checkpoints and summary.json all say R-PCP.
+            raise ValueError(
+                "mid_epochs must be < total_epochs, or the WEIGHTED phase never "
+                f"runs (mid_epochs={self.mid_epochs}, total_epochs={self.total_epochs})"
+            )
 
     # ------------------------------------------------------------------ #
     def phase(self, epoch: int) -> Phase:
@@ -83,10 +94,40 @@ class PhaseSchedule:
 
     @classmethod
     def from_configs(cls, optim: OptimConfig, reliability: ReliabilityConfig) -> PhaseSchedule:
+        """Build a schedule that fits ``optim.epochs``, without ever silently
+        eliminating the WEIGHTED phase.
+
+        ``reliability.warmup_epochs``/``mid_epochs`` are configured
+        independently of ``optim.epochs`` (so the same reliability schedule can
+        be reused across a quick-iteration config and a full run). The old
+        ``min(reliability.mid_epochs, optim.epochs)`` clamp could set
+        ``mid_epochs == total_epochs``, which leaves zero WEIGHTED epochs: the
+        run would train as plain PCP -- ``use_reliability`` is ``False`` for
+        every epoch -- while still reporting itself as R-PCP and writing a
+        ``reliability.npy`` / ``reliability/auroc`` that never influenced
+        training. Clamping to ``optim.epochs - 1`` guarantees at least the
+        final epoch is WEIGHTED whenever ``optim.epochs >= 1``.
+        """
+        total = optim.epochs
+        mid = min(reliability.mid_epochs, max(0, total - 1))
+        warmup = min(reliability.warmup_epochs, mid)
+        if mid != reliability.mid_epochs or warmup != reliability.warmup_epochs:
+            logger.warning(
+                "reliability.{warmup_epochs=%d, mid_epochs=%d} do not fit "
+                "optim.epochs=%d; clamped to {warmup_epochs=%d, mid_epochs=%d} "
+                "so at least the last epoch is reliability-weighted. Increase "
+                "optim.epochs or lower reliability.mid_epochs to configure this "
+                "explicitly instead of relying on the clamp.",
+                reliability.warmup_epochs,
+                reliability.mid_epochs,
+                total,
+                warmup,
+                mid,
+            )
         return cls(
-            warmup_epochs=min(reliability.warmup_epochs, optim.epochs),
-            mid_epochs=min(reliability.mid_epochs, optim.epochs),
-            total_epochs=optim.epochs,
+            warmup_epochs=warmup,
+            mid_epochs=mid,
+            total_epochs=total,
             update_every=reliability.update_every,
         )
 

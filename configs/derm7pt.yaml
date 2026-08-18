@@ -27,4 +27,8 @@ reliability:
   warmup_epochs: 8
   mid_epochs: 14
   update_every: 2
-  n_folds: 1
+  # NOTE: was 1, which silently disables instability estimation entirely
+  # (`trainer.py` only computes `fold_class_means`/`estimate_instability` when
+  # `n_folds > 1`) -- Evidence Mode A would have degraded to residual-only
+  # for this dataset alone, with every other dataset config using 2-4 folds.
+  n_folds: 3

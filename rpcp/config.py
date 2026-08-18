@@ -202,6 +202,15 @@ class LossConfig:
     lambda_prior: float = 1.0
     lambda_ent: float = 0.05
     lambda_r: float = 0.01
+    #: Second-moment (variance) prior term; see `rpcp.losses.variance_prior`.
+    #: `L_prior` alone lets a model satisfy the class-mean constraint by
+    #: predicting the exact same probability for every image in a class
+    #: (zero within-class variance), which zeroes that concept's F1 whenever
+    #: the true label isn't unanimous within the class. `0.0` (default)
+    #: reproduces the paper's stated objective exactly; a positive value adds
+    #: pressure toward the Bernoulli-implied variance `Pi*(1-Pi)` without
+    #: telling the model which image gets which value (still unidentified).
+    lambda_var: float = 0.0
     #: Per-image concept supervision. Non-zero ONLY for the supervised-CBM upper
     #: bound of plan 6.5; every other method must leave this at 0 so that no
     #: per-image concept label touches training.
@@ -223,6 +232,16 @@ class LossConfig:
     entropy_on_concepts: bool = True
     label_smoothing: float = 0.0
     class_mean_momentum: float = 0.9
+    #: See `ClassMeanEstimator`. At steady state with momentum m, the history
+    #: holds `m/(1-m)` times the batch count, so `d(mean)/d(batch sum)` is
+    #: diluted by that same factor -- at the default 0.9 momentum, `d(mean)`
+    #: moves ~1/10 as much per unit of batch gradient as a batch-only
+    #: estimator would, silently shrinking the *effective* `lambda_prior` well
+    #: below its configured value. `True` rescales the gradient path (not the
+    #: forward value) so a step of `L_prior`'s gradient through `p_bar` has the
+    #: same magnitude regardless of momentum; set `False` to reproduce the old
+    #: (diluted) behaviour for an ablation.
+    class_mean_gradient_rescale: bool = True
     eps: float = 1e-6
 
 

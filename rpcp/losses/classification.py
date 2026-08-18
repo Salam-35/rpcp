@@ -42,11 +42,13 @@ class ClassificationLoss(nn.Module):
     ) -> None:
         super().__init__()
         self.label_smoothing = label_smoothing
-        if class_weights is None:
-            self.class_weights: torch.Tensor | None = None
-        else:
+        # Registered as a buffer (not a plain attribute) so it moves with the
+        # module under `.to(device)`; forward() always reads it back through
+        # `getattr(self, "_class_weights", None)` rather than caching a second
+        # reference, which previously went stale (stuck on the construction-
+        # time device) the moment the module was moved.
+        if class_weights is not None:
             self.register_buffer("_class_weights", class_weights.float())
-            self.class_weights = self._class_weights
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         weights = getattr(self, "_class_weights", None)

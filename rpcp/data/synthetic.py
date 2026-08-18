@@ -52,24 +52,101 @@ class SyntheticWorld:
 
 
 def make_synthetic_world(config: SyntheticConfig) -> SyntheticWorld:
-    """Draw a well-separated ground-truth prior table ``Pi_star``."""
+    """Draw a well-separated, per-concept identifiable ground-truth prior table.
+
+    Two conditions must both hold, and drawing ``bits`` uniformly at random only
+    guarantees the first:
+
+    * class signatures are pairwise distinct (``Delta > 0``), so no two classes
+      are confusable through the prior;
+    * every concept's row varies across classes (``per_concept_range[m] > 0``),
+      so every concept actually carries class-level information.
+
+    A row that is constant (e.g. all-1) makes ``Pi[m, :]`` independent of the
+    class, and both ``L_prior`` and ``L_match`` are then independent of
+    concept ``m``'s per-image value -- no prior-supervised method can recover
+    it and its AUROC is chance *by construction*, regardless of training.  The
+    original column-only repair left this uncaught: at the shipped defaults
+    (``M=8, K=3, seed=0``) 5 of 8 concepts were constant, and in general a
+    fraction ``2/2**K`` of concepts are dead in expectation.
+
+    Raises:
+        ValueError: If ``n_concepts`` cannot even in principle produce
+            ``n_classes`` distinct binary signatures (``2**n_concepts < n_classes``).
+        RuntimeError: If repair does not converge (should not happen whenever
+            the above precondition holds; kept as a hard guard rather than a
+            silent best-effort table).
+    """
+    from rpcp.evaluation.prior_separation import separation_report
+
+    if 2**config.n_concepts < config.n_classes:
+        raise ValueError(
+            f"synthetic.n_concepts={config.n_concepts} cannot produce "
+            f"{config.n_classes} distinct class signatures (need 2**n_concepts >= "
+            "n_classes); increase n_concepts or decrease n_classes."
+        )
+
     rng = np.random.default_rng(config.seed)
     high = 0.5 + 0.5 * config.prior_sharpness
     low = 1.0 - high
 
-    bits = rng.integers(0, 2, size=(config.n_concepts, config.n_classes))
-    # Force distinct class signatures: if two columns coincide, flip one bit.
-    for y in range(1, config.n_classes):
-        for y_prev in range(y):
-            if np.array_equal(bits[:, y], bits[:, y_prev]):
-                bits[y % config.n_concepts, y] ^= 1
+    bits = _draw_identifiable_bits(rng, config.n_concepts, config.n_classes)
     prior = np.where(bits == 1, high, low).astype(np.float32)
+    prior_tensor = torch.from_numpy(prior)
+
+    # Defensive re-check: cheap, and guards against a future edit to the repair
+    # loop silently reintroducing an unidentifiable table.
+    report = separation_report(prior_tensor)
+    if report.delta <= 0.0 or report.per_concept_range.min() <= 0.0:
+        raise RuntimeError(  # pragma: no cover -- _draw_identifiable_bits guarantees this
+            "make_synthetic_world produced an unidentifiable prior table "
+            f"(delta={report.delta}, min_concept_range={report.per_concept_range.min()})"
+        )
 
     return SyntheticWorld(
-        prior=torch.from_numpy(prior),
+        prior=prior_tensor,
         concept_names=[f"concept_{m:02d}" for m in range(config.n_concepts)],
         class_names=[f"class_{k}" for k in range(config.n_classes)],
         config=config,
+    )
+
+
+def _draw_identifiable_bits(
+    rng: np.random.Generator,
+    n_concepts: int,
+    n_classes: int,
+    *,
+    max_outer_attempts: int = 200,
+) -> np.ndarray:
+    """Draw an ``(M, K)`` bit matrix with distinct columns and non-constant rows.
+
+    Alternates fixing column collisions (two classes sharing a signature) and
+    row collisions (a concept with no class-level signal), flipping a
+    RNG-chosen bit each time rather than a fixed index, so the two repairs
+    cannot lock into a cycle.  If one draw fails to converge, the whole matrix
+    is redrawn fresh (consuming more of ``rng``, still deterministic for a
+    given seed) rather than continuing to patch a bad starting point.
+    """
+    max_inner_rounds = n_concepts + n_classes + 8
+    for _ in range(max_outer_attempts):
+        bits = rng.integers(0, 2, size=(n_concepts, n_classes))
+        for _ in range(max_inner_rounds):
+            changed = False
+            for y in range(1, n_classes):
+                for y_prev in range(y):
+                    if np.array_equal(bits[:, y], bits[:, y_prev]):
+                        bits[rng.integers(0, n_concepts), y] ^= 1
+                        changed = True
+            dead = np.flatnonzero(bits.min(axis=1) == bits.max(axis=1))
+            for m in dead:
+                bits[m, rng.integers(0, n_classes)] ^= 1
+                changed = True
+            if not changed:
+                return bits
+        # This draw's basin didn't converge in time; start over from a fresh draw.
+    raise RuntimeError(
+        f"could not draw an identifiable {n_concepts}x{n_classes} prior table "
+        f"after {max_outer_attempts} attempts"
     )
 
 

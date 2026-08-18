@@ -32,6 +32,7 @@ from rpcp.losses.classification import ClassificationLoss
 from rpcp.losses.entropy import EntropyLoss
 from rpcp.losses.matching import PriorMatchingLoss
 from rpcp.losses.prior import ReliabilityWeightedPriorLoss, build_prior_loss
+from rpcp.losses.variance_prior import BernoulliVariancePriorLoss
 
 if TYPE_CHECKING:  # avoids a models <-> losses import cycle
     from rpcp.models.rpcp import RPCPOutput
@@ -49,6 +50,7 @@ class LossBreakdown:
     prior: torch.Tensor
     entropy: torch.Tensor
     reliability_penalty: torch.Tensor
+    variance: torch.Tensor | None = None
     concept_supervision: torch.Tensor | None = None
     class_means: ClassMeanEstimate | None = None
     extras: dict[str, float] = field(default_factory=dict)
@@ -63,6 +65,8 @@ class LossBreakdown:
             f"{prefix}ent": scalar(self.entropy),
             f"{prefix}reliability_penalty": scalar(self.reliability_penalty),
         }
+        if self.variance is not None:
+            out[f"{prefix}var"] = scalar(self.variance)
         if self.concept_supervision is not None:
             out[f"{prefix}concept_supervised"] = scalar(self.concept_supervision)
         out.update({f"{prefix}{k}": v for k, v in self.extras.items()})
@@ -104,8 +108,13 @@ class CompositeObjective(nn.Module):
             on_concepts=config.entropy_on_concepts,
         )
         self.class_means = ClassMeanEstimator(
-            n_concepts, n_classes, momentum=config.class_mean_momentum, eps=config.eps
+            n_concepts,
+            n_classes,
+            momentum=config.class_mean_momentum,
+            eps=config.eps,
+            gradient_rescale=config.class_mean_gradient_rescale,
         )
+        self.variance_prior = BernoulliVariancePriorLoss(eps=config.eps)
 
     # ------------------------------------------------------------------ #
     def forward(
@@ -183,6 +192,11 @@ class CompositeObjective(nn.Module):
         loss_cls = self.classification(output.class_logits, labels)
         loss_match = self.matching(output.concept_probs, priors, labels, reliability)
         loss_prior = self.prior_loss(prior_target, estimate.means, prior_weights)
+        loss_var: torch.Tensor | None = None
+        if self.config.lambda_var > 0:
+            loss_var = self.variance_prior(
+                output.concept_probs, labels, prior_target, estimate.means, weights=prior_weights
+            )
         entropy_terms = self.entropy(output.concept_probs, output.attention)
         penalty = (
             torch.zeros((), device=device)
@@ -203,6 +217,8 @@ class CompositeObjective(nn.Module):
         )
         if loss_concept is not None:
             total = total + self.config.lambda_concept * loss_concept
+        if loss_var is not None:
+            total = total + self.config.lambda_var * loss_var
 
         extras: dict[str, float] = {}
         if entropy_terms.attention is not None:
@@ -217,6 +233,7 @@ class CompositeObjective(nn.Module):
             prior=loss_prior,
             entropy=entropy_terms.total,
             reliability_penalty=penalty,
+            variance=loss_var,
             concept_supervision=loss_concept,
             class_means=estimate,
             extras=extras,

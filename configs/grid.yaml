@@ -19,6 +19,21 @@ override:
 
 grid:
   eval.concept_threshold: [0.2]
-  priors.corruption.mode: [adversarial_flip]
+  # `mode: none` is the clean-prior control -- alpha/fraction are ignored by
+  # corrupt_priors() whenever mode is none (see corruption.py), so this pairs
+  # safely with the single alpha/fraction values below via the cartesian
+  # product below: {none} x {1.0} x {0.5} and {adversarial_flip} x {1.0} x
+  # {0.5}, i.e. exactly one clean run and one corrupted run per method/seed.
+  #
+  # Without the clean arm, every run in this grid trained against a prior
+  # where half of every method's (concept, class) entries were flipped to
+  # 1 - Pi (adversarial_flip, alpha=1.0, fraction=0.5) -- including `pcp`,
+  # which has no reliability mechanism to compensate. On K=2 (derm7pt),
+  # flipping one of a concept's two entries inverts its class ordering, so
+  # L_prior actively pulls predictions the wrong way. Concept AUROC ~= 0.5
+  # is the *expected* outcome of that experiment, not evidence the model
+  # doesn't work -- and there was no run in the grid that could tell the
+  # difference.
+  priors.corruption.mode: [none, adversarial_flip]
   priors.corruption.alpha: [1.0]
   priors.corruption.fraction: [0.5]

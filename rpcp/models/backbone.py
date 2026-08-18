@@ -101,10 +101,21 @@ def build_backbone(
 
     try:
         from torchvision import models as tv_models
-    except ImportError:  # pragma: no cover - exercised only without torchvision
-        logger.warning("torchvision unavailable; falling back to simple_cnn for '%s'", name)
-        module = SimpleCNN(in_channels=in_channels)
-        return Backbone(module=module, feature_dim=module.out_channels)
+    except ImportError as exc:  # pragma: no cover - exercised only without torchvision
+        # Do NOT silently substitute SimpleCNN here: the caller asked for a
+        # named torchvision backbone (e.g. "resnet18", possibly pretrained),
+        # and config.model.backbone / summary.json would go on reporting that
+        # name even though a randomly-initialised, architecturally different
+        # network was actually trained. That's a silent correctness bug, not
+        # a graceful degradation -- a run's "backbone: resnet18, pretrained:
+        # true" must mean what it says. Fail loudly instead; the caller can
+        # explicitly opt into the dependency-free default with
+        # ``model.backbone: simple_cnn``.
+        raise ImportError(
+            f"torchvision is required for backbone '{name}' but is not installed. "
+            "Install torchvision, or set `model.backbone: simple_cnn` to explicitly "
+            "opt into the dependency-free default instead of silently substituting it."
+        ) from exc
 
     if not hasattr(tv_models, name):
         raise ValueError(f"Unknown backbone '{name}'")

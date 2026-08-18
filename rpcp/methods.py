@@ -51,16 +51,36 @@ METHODS: dict[str, dict[str, Any]] = {
     },
     # 6. Recommended audited R-PCP: audit reliability + prior repair +
     # image-level audit concept anchors.
+    #
+    # Two things this preset used to get wrong (both fixed here):
+    #
+    # - `audit_concept_weighting: "inverse_reliability"` weighted the audit
+    #   anchor -- BCE against real per-image concept labels, the *only* loss
+    #   term in the whole objective that is a joint function of (image,
+    #   concept) -- by `1 - r`.  Per-image labels are equally correct
+    #   regardless of how much the class-level prior is trusted, so this
+    #   suppressed the anchor by up to ~38x on exactly the concepts whose
+    #   prior looked reliable, leaving most concepts never anchored at all.
+    #   Default is now "none"; the old behaviour survives as ablation
+    #   `11-inverse-reliability-anchor` below.
+    # - `lambda_match: 0.0` + `class_head: "linear"` removed the only other
+    #   route from the concept layer to the prior table: with matching off
+    #   and a free `Linear(M, K)` head, the model can reach any class
+    #   accuracy through an arbitrary reparameterisation of the concept
+    #   space, and Proposition 2 (two classes with identical prior columns
+    #   get identical logits) is never actually exercised. `class_head:
+    #   "prior"` is parameter-free, so classification is forced entirely
+    #   through the prior-similarity path, and `lambda_match` is left at the
+    #   dataset default instead of zeroed.
     "r-pcp-audit": {
         "reliability.mode": "audit",
         "data.audit_fraction": 0.1,
         "loss.lambda_concept": 0.0,
         "loss.lambda_audit_concept": 1.0,
-        "loss.audit_concept_weighting": "inverse_reliability",
+        "loss.audit_concept_weighting": "none",
         "loss.prior_repair": "audit",
         "loss.match_reliability_weighted": True,
-        "loss.lambda_match": 0.0,
-        "model.class_head": "linear",
+        "model.class_head": "prior",
     },
     # Plain audit calibration only. Kept as an ablation because it tends to know
     # which priors are wrong without translating that into better concept/class learning.
@@ -75,11 +95,10 @@ METHODS: dict[str, dict[str, Any]] = {
         "data.audit_fraction": 0.1,
         "loss.lambda_concept": 0.0,
         "loss.lambda_audit_concept": 1.0,
-        "loss.audit_concept_weighting": "inverse_reliability",
+        "loss.audit_concept_weighting": "none",
         "loss.prior_repair": "audit",
         "loss.match_reliability_weighted": True,
-        "loss.lambda_match": 0.0,
-        "model.class_head": "linear",
+        "model.class_head": "prior",
     },
     # 7. Oracle reliability: uses the true corruption mask (upper bound).
     "oracle": {
@@ -92,11 +111,10 @@ METHODS: dict[str, dict[str, Any]] = {
         "data.audit_fraction": 0.1,
         "loss.lambda_concept": 0.0,
         "loss.lambda_audit_concept": 1.0,
-        "loss.audit_concept_weighting": "inverse_reliability",
+        "loss.audit_concept_weighting": "none",
         "loss.prior_repair": "audit",
         "loss.match_reliability_weighted": True,
-        "loss.lambda_match": 0.0,
-        "model.class_head": "linear",
+        "model.class_head": "prior",
     },
     # Evidence Mode D, only meaningful on multi-rater datasets (LIDC-IDRI).
     "r-pcp-multirater": {
@@ -121,6 +139,22 @@ ABLATIONS: dict[str, dict[str, Any]] = {
     "8-no-matching": {**METHODS["r-pcp"], "loss.lambda_match": 0.0},
     "9-hard-threshold": {**METHODS["r-pcp"], "reliability.hard_threshold": 0.5},
     "10-continuous-reliability": {**METHODS["r-pcp"], "reliability.hard_threshold": None},
+    # Reproduces the pre-fix `r-pcp-audit` behaviour, for a direct before/after
+    # comparison: weighting the audit anchor by `1 - r` suppresses the only
+    # (image, concept) term in the objective on exactly the entries that look
+    # trustworthy, which is the opposite of what an annotation-budget anchor
+    # should do.
+    "11-inverse-reliability-anchor": {
+        **METHODS["r-pcp-audit"],
+        "loss.audit_concept_weighting": "inverse_reliability",
+    },
+    # `L_prior` is satisfiable by predicting the identical probability for
+    # every image in a class (zero within-class variance), which drives
+    # concept F1 to 0 regardless of how well the class mean is matched --
+    # see `rpcp.losses.variance_prior`. This ablation turns on the
+    # second-moment term to test whether that collapse is contributing to a
+    # low concept macro-F1 independently of the identifiability ceiling.
+    "12-variance-anchor": {**METHODS["r-pcp"], "loss.lambda_var": 0.3},
 }
 
 

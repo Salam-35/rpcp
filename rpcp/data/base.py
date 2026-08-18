@@ -136,9 +136,21 @@ class ConceptDataset(Dataset[ConceptBatch]):
 
 @dataclass(slots=True)
 class SplitBundle:
-    """Train / val / test (+ optional reliability-audit) splits of one dataset."""
+    """Train / val / test (+ optional reliability-audit) splits of one dataset.
+
+    ``train_eval`` is the *same images and indices* as ``train``, but with the
+    deterministic evaluation transform instead of the training augmentation.
+    Anything that reads model outputs off the training set for measurement
+    rather than optimisation -- held-out class means when
+    ``reliability.use_crossfit=False``, fold/instability estimation, ad hoc
+    diagnostics -- should use it instead of ``train``. Reusing ``train``
+    directly for measurement makes the "held-out" residual partly a measurement
+    of random crops and flips instead of the model, and makes cross-fitted
+    instability estimates non-reproducible between runs.
+    """
 
     train: Dataset[ConceptBatch]
+    train_eval: Dataset[ConceptBatch]
     val: Dataset[ConceptBatch]
     test: Dataset[ConceptBatch]
     audit: Dataset[ConceptBatch] | None

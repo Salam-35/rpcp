@@ -10,6 +10,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from rpcp.data.priors import PriorBundle
+from rpcp.evaluation.baselines import (
+    BaselineMetrics,
+    concept_baselines,
+    identifiability_ceiling,
+    null_concept_baseline,
+)
 from rpcp.evaluation.calibration import (
     CalibrationCurve,
     brier_score,
@@ -35,6 +41,7 @@ from rpcp.evaluation.reliability_metrics import (
 from rpcp.models.rpcp import RPCPModel
 
 __all__ = [
+    "BaselineMetrics",
     "CalibrationCurve",
     "ClassMetrics",
     "ConceptMetrics",
@@ -47,12 +54,15 @@ __all__ = [
     "brier_score",
     "class_metrics",
     "collect_predictions",
+    "concept_baselines",
     "concept_metrics",
     "confusion_matrix",
     "delta_sweep",
     "evaluate_reliability",
     "evaluate_split",
     "expected_calibration_error",
+    "identifiability_ceiling",
+    "null_concept_baseline",
     "prior_separation_delta",
     "reliability_auprc",
     "reliability_auroc",
@@ -145,6 +155,9 @@ class EvaluationResult:
         out = self.classification.as_dict(f"{prefix}class_")
         if self.concept is not None:
             out.update(self.concept.as_dict(f"{prefix}concept_"))
+        baselines = self.extras.get("baselines")
+        if isinstance(baselines, BaselineMetrics):
+            out.update(baselines.as_dict(f"{prefix}concept_"))
         return out
 
     @property
@@ -176,6 +189,7 @@ def evaluate_split(
     n_classes = int(n_classes or predictions.class_probs.shape[1])
 
     concept_result: ConceptMetrics | None = None
+    extras: dict[str, Any] = {}
     if predictions.has_concepts:
         concept_result = concept_metrics(
             predictions.concept_probs,
@@ -186,6 +200,16 @@ def evaluate_split(
             n_bins=n_bins,
             concept_names=concept_names,
         )
+        # Null floor + identifiability ceiling (see `evaluation.baselines`):
+        # cheap to compute from the same ground truth, and turn a bare
+        # macro-F1 number into an interpretable "X% of the way from ignoring
+        # the image to the class-mean-only ceiling" figure.
+        extras["baselines"] = concept_baselines(
+            predictions.concepts,  # type: ignore[arg-type]
+            predictions.labels,
+            n_classes=n_classes,
+            threshold=concept_threshold,
+        )
 
     return EvaluationResult(
         split=split,
@@ -194,6 +218,7 @@ def evaluate_split(
         ),
         concept=concept_result,
         predictions=predictions if keep_predictions else None,
+        extras=extras,
     )
 
 
