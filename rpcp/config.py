@@ -206,6 +206,12 @@ class LossConfig:
     #: bound of plan 6.5; every other method must leave this at 0 so that no
     #: per-image concept label touches training.
     lambda_concept: float = 0.0
+    #: Concept supervision on the held-out audit split. Unlike
+    #: ``lambda_concept``, this is the small-budget anchor used by audited R-PCP.
+    lambda_audit_concept: float = 0.0
+    #: ``none`` gives every audited concept equal weight; ``inverse_reliability``
+    #: anchors low-reliability class/concept entries more strongly.
+    audit_concept_weighting: str = "none"  # none | inverse_reliability
     prior_loss: PriorLossType = PriorLossType.BERNOULLI
     prior_repair: str = "none"  # none | background | audit
     prior_reduction: str = "mean"  # "sum" is the plan's literal objective

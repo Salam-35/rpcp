@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from rpcp.config import ExperimentConfig, ReliabilityMode
@@ -289,7 +290,102 @@ class RPCPTrainer:
                 totals[key] = totals.get(key, 0.0) + value
             n_batches += 1
 
-        return {key: value / max(1, n_batches) for key, value in totals.items()}
+        metrics = {key: value / max(1, n_batches) for key, value in totals.items()}
+        audit_metrics = self.train_audit_anchor(scaler)
+        metrics.update(audit_metrics)
+        return metrics
+
+    def train_audit_anchor(self, scaler: torch.amp.GradScaler) -> dict[str, float]:
+        """Optional image-level concept anchor on the audit split.
+
+        This is deliberately separate from the main train loader: audit images
+        are not folded back into ordinary class/prior training.  They only
+        provide pointwise concept constraints for the configured audit budget.
+        """
+        if self.config.loss.lambda_audit_concept <= 0:
+            return {}
+        if "audit" not in self.loaders:
+            raise ValueError(
+                "loss.lambda_audit_concept > 0 requires an audit split; set "
+                "data.audit_fraction > 0"
+            )
+
+        reliability = self.reliability_module()
+        total_loss = 0.0
+        n_batches = 0
+        self.model.train()
+        for batch in self.loaders["audit"]:
+            images = batch["image"].to(self.device, non_blocking=True)
+            labels = batch["label"].to(self.device, non_blocking=True)
+            concepts = batch["concepts"].to(self.device, non_blocking=True)
+            concept_mask = batch["has_concepts"].to(self.device, non_blocking=True)
+            if not bool(concept_mask.any()):
+                continue
+
+            self.optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(
+                device_type=self.device.type,
+                enabled=self.config.optim.amp and self.device.type == "cuda",
+            ):
+                output = self.model(
+                    images,
+                    priors=self.prior_table,
+                    reliability=(
+                        reliability if self.config.loss.match_reliability_weighted else None
+                    ),
+                )
+                loss = self.audit_concept_loss(
+                    output.concept_logits,
+                    concepts,
+                    labels,
+                    concept_mask,
+                    reliability,
+                )
+                weighted = self.config.loss.lambda_audit_concept * loss
+
+            scaler.scale(weighted).backward()
+            if self.config.optim.grad_clip is not None:
+                scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.model.parameters()), self.config.optim.grad_clip
+                )
+            scaler.step(self.optimizer)
+            scaler.update()
+
+            total_loss += float(loss.detach())
+            n_batches += 1
+
+        if n_batches == 0:
+            return {}
+        mean_loss = total_loss / n_batches
+        return {
+            "train/loss_audit_concept": mean_loss,
+            "train/loss_audit_concept_weighted": self.config.loss.lambda_audit_concept
+            * mean_loss,
+        }
+
+    def audit_concept_loss(
+        self,
+        logits: torch.Tensor,
+        concepts: torch.Tensor,
+        labels: torch.Tensor,
+        concept_mask: torch.Tensor,
+        reliability: torch.Tensor,
+    ) -> torch.Tensor:
+        losses = F.binary_cross_entropy_with_logits(
+            logits, concepts.float(), reduction="none"
+        )
+        row_mask = concept_mask.float().view(-1, 1)
+        match self.config.loss.audit_concept_weighting:
+            case "none":
+                weights = torch.ones_like(losses)
+            case "inverse_reliability":
+                weights = 1.0 - reliability.to(logits.device).index_select(1, labels).t()
+            case other:
+                raise ValueError(f"Unknown loss.audit_concept_weighting='{other}'")
+        weighted = losses * weights * row_mask
+        denominator = (weights * row_mask).sum().clamp_min(1.0)
+        return weighted.sum() / denominator
 
     # ------------------------------------------------------------------ #
     # Reliability

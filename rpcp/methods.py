@@ -55,10 +55,34 @@ METHODS: dict[str, dict[str, Any]] = {
         "data.audit_fraction": 0.1,
         "loss.lambda_concept": 0.0,
     },
+    # R-PCP + audit repair + image-level audit concept anchors.
+    "r-pcp-audit-anchor": {
+        "reliability.mode": "audit",
+        "data.audit_fraction": 0.1,
+        "loss.lambda_concept": 0.0,
+        "loss.lambda_audit_concept": 1.0,
+        "loss.audit_concept_weighting": "inverse_reliability",
+        "loss.prior_repair": "audit",
+        "loss.match_reliability_weighted": True,
+        "loss.lambda_match": 0.0,
+        "model.class_head": "linear",
+    },
     # 7. Oracle reliability: uses the true corruption mask (upper bound).
     "oracle": {
         "reliability.mode": "oracle",
         "loss.lambda_concept": 0.0,
+    },
+    # Oracle reliability plus the same audit anchor, for the upper-bound variant.
+    "oracle-anchor": {
+        "reliability.mode": "oracle",
+        "data.audit_fraction": 0.1,
+        "loss.lambda_concept": 0.0,
+        "loss.lambda_audit_concept": 1.0,
+        "loss.audit_concept_weighting": "inverse_reliability",
+        "loss.prior_repair": "audit",
+        "loss.match_reliability_weighted": True,
+        "loss.lambda_match": 0.0,
+        "model.class_head": "linear",
     },
     # Evidence Mode D, only meaningful on multi-rater datasets (LIDC-IDRI).
     "r-pcp-multirater": {

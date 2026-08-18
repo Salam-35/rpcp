@@ -75,6 +75,8 @@ loss:
   lambda_ent: 0.05
   lambda_r: 0.01
   lambda_concept: 0.0      # >0 only for the supervised-CBM upper bound
+  lambda_audit_concept: 0.0
+  audit_concept_weighting: none  # none | inverse_reliability
   prior_loss: bernoulli    # bernoulli (R-PCP-BernKL) | pcp_kl (R-PCP-PCPKL)
   prior_repair: none       # none | background | audit
   prior_reduction: mean
