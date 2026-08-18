@@ -48,7 +48,15 @@ def attention_entropy(attention: torch.Tensor, *, eps: float = EPS) -> torch.Ten
     flat = attention.flatten(2).clamp_min(eps)
     flat = flat / flat.sum(dim=-1, keepdim=True)
     entropy = -(flat * flat.log()).sum(dim=-1)
-    return entropy / math.log(flat.shape[-1])
+    # A 1x1 feature map has exactly one location: the entropy is 0 and so is
+    # log(H*W).  Dividing gives 0/0 = NaN, which then propagates through
+    # ``L_total.backward()`` and silently destroys every parameter in the model.
+    # (Reachable via ``RPCPModel.forward``'s 1x1 fallback for pooled backbones,
+    # and via SimpleCNN at image_size 16.)
+    denominator = math.log(flat.shape[-1])
+    if denominator <= 0.0:
+        return torch.zeros_like(entropy)
+    return entropy / denominator
 
 
 @dataclass(slots=True)

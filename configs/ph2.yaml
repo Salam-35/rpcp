@@ -1,12 +1,16 @@
 _base_: base.yaml
 
-# PH2 (200 dermoscopic images). Small: use strong augmentation, low LR,
-# and expect noisy per-concept F1 -- this is the fast iteration dataset.
+# PH2 (200 dermoscopic images: 80 common nevus / 80 atypical nevus / 40 melanoma).
+# Small: use strong augmentation, low LR, and expect noisy per-concept F1 --
+# this is the fast iteration dataset.
 name: rpcp-ph2
 
 data:
   name: ph2
-  root: datasets/PH2
+  # The official archive extracts to `PH2Dataset/`, containing
+  # `PH2 Dataset images/<case>/...`, `PH2_dataset.xlsx` and `PH2_dataset.txt`.
+  # `rpcp.data.ph2.prepare_manifest` writes `manifest.csv` here on first use.
+  root: datasets/PH2Dataset
   manifest: null            # defaults to <root>/manifest.csv
   image_size: 224
   batch_size: 16
@@ -30,7 +34,7 @@ optim:
 
 reliability:
   warmup_epochs: 10
-  mid_epochs: 20
+  mid_epochs: 20            # must stay < optim.epochs or the WEIGHTED phase never runs
   update_every: 2
   n_folds: 3
 
@@ -38,5 +42,19 @@ loss:
   lambda_match: 0.5
   lambda_prior: 1.0
   lambda_ent: 0.05
-  # PH2 colour attributes form a mutually-exclusive-ish group; used by pcp_kl.
-  concept_groups: [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11]]
+  # Concept order is rpcp.data.ph2.PH2_CONCEPTS:
+  #   0 asymmetry              1 atypical_pigment_network  2 atypical_dots_globules
+  #   3 streaks                4 regression_areas          5 blue_whitish_veil
+  #   6..11 colour_{white,red,light_brown,dark_brown,blue_gray,black}
+  # `original_pcp_kl` renormalises *within* a group, which is only meaningful for
+  # a mutually-exclusive set.  The six colour attributes are one such set; the six
+  # structural criteria are independent binary observations and each needs its own
+  # singleton group.  (Grouping 0-5 together, as an earlier version did, forced
+  # six unrelated criteria to compete for one unit of probability mass.)
+  concept_groups: [[0], [1], [2], [3], [4], [5], [6, 7, 8, 9, 10, 11]]
+
+eval:
+  # PH2 concept prevalences run from 0.05 (colour_red) to 0.78 (colour_dark_brown);
+  # a fixed 0.5 threshold understates F1 badly for the rare ones. AUROC is the
+  # threshold-free metric to read first.
+  concept_threshold: 0.5

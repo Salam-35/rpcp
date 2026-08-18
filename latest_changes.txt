@@ -1,0 +1,1935 @@
+Do not use audit images in the normal training loader as unlabeled training examples if you want a clean audit-budget story. Use them through a separate audit loader only for:
+
+  reliability estimation
+  audit concept BCE
+
+  Then your annotation budget is honest.
+
+  Implementation direction:
+
+  1. Add config:
+
+  loss:
+    prior_repair: audit
+    lambda_audit_concept: 0.0
+
+  2. In trainer, keep loaders["audit"].
+  3. During each epoch, after or alongside normal train batches, run audit batches through the model and add concept BCE:
+
+  audit_loss = BCEWithLogits(concept_logits, concepts)
+
+  4. Scale it:
+
+  total = main_loss + lambda_audit_concept * audit_loss
+
+  5. Sweep:
+
+  audit_fraction: 0.02, 0.05, 0.10, 0.20
+  lambda_audit_concept: 0.1, 0.3, 1.0
+  prior_repair: none, background, audit
+
+  The comparisons should be:
+
+  PCP
+  R-PCP-audit repair only
+  R-PCP-audit + audit concept anchor
+  Supervised-CBM
+  Oracle + audit concept anchor
+
+  The claim becomes:
+
+  Reliability-weighted prior repair reduces class-level prior bias,
+  but audit concept anchoring is required to resolve image-level non-identifiability.
+
+  That is defensible and matches the empirical failure.
+
+  How to write the theory:
+
+  Class-level moments identify only E[c|y], not c(x).
+  Prior repair can improve the target moment:
+  |Pi_eff - Pi_star| < |Pi_tilde - Pi_star|
+  But per-image recovery requires additional constraints.
+  A small audit set supplies pointwise concept constraints.
+  Therefore concept error is controlled by both:
+    corrected prior moment error
+    audit anchor coverage/error
+
+  I would not overclaim a full theorem yet. State it as a proposition or bound sketch:
+
+  Under sufficient visual separability and audit coverage, reducing prior moment bias and adding pointwise audit anchors reduces expected concept error.
+
+  Next coding step:
+
+  Implement lambda_audit_concept and audit-loader training. That is the missing piece now.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+
+
+› Theoretically, the right move is:
+  Reliability should control both:
+  1. which class-level priors are trusted,
+  2. how much image-level anchoring is needed.
+  Current version:
+  bad prior -> lower weight
+  Better version:
+  bad/uncertain prior -> repair target + request/activate stronger image-level anchor
+  Core Theory
+  Think of the prior as a noisy measurement of the true class-level concept rate:
+  Pi_tilde[m,y] = Pi_star[m,y] + noise[m,y]
+  Reliability means inverse noise:
+  high r[m,y] = low noise
+  low r[m,y]  = high noise
+  So instead of training toward raw Pi_tilde, define a corrected prior:
+  Pi_eff[m,y] =
+      alpha[m,y] * Pi_tilde[m,y]
+    + beta[m,y]  * Pi_audit[m,y]
+    + gamma[m,y] * rho[m]
+  where:
+  Pi_tilde = original expert/LLM/literature prior
+  Pi_audit = prevalence from small image-level audit labels
+  rho       = class-agnostic background concept prevalence
+  If reliability is high:
+  Pi_eff ≈ Pi_tilde
+  If reliability is low:
+  Pi_eff shifts toward Pi_audit or rho
+  Then train with:
+  L_prior = KL(Pi_eff[m,y] || mean predicted concept[m,y])
+  That fixes class-level bias.
+  But this still does not fully solve image-level concepts. For that, reliability must also decide where to add anchor supervision.
+  Use:
+  L_total =
+      L_class
+    + lambda_prior * L_prior(Pi_eff)
+    + lambda_audit * L_audit_concept
+  where:
+  L_audit_concept = BCE(c_hat(x), c)
+  only on the small audit images with concept labels.
+  Now reliability improves concept learning because it does two causal things:
+  Reliable prior -> use class-level prior strongly.
+  Unreliable prior -> repair/soften prior and rely more on audit concept labels.
+  A clean theoretical statement would be:
+  Reliability-weighted priors reduce bias in class-level concept prevalence estimates, while audit concept supervision resolves the image-level non-identifiability left by class-level moments.
+
+  So the theorem shape is:
+  concept error <=
+    audit estimation error
+  + prior estimation error
+  + prior noise bias
+  + optimization/generalization error
+  Reliability helps by reducing the prior noise bias term:
+  unweighted PCP bias ~ |Pi_tilde - Pi_star|
+  R-PCP bias          ~ |Pi_eff   - Pi_star|
+  If your reliability is good, then:
+  |Pi_eff - Pi_star| < |Pi_tilde - Pi_star|
+  So concept learning improves.
+  But the key condition is:
+  some image-level anchor must exist
+  That anchor can be:
+  5-10% audit concept labels,
+  multi-rater concept annotations,
+  segmentation/attribute masks,
+  confident positive/negative concept examples,
+  CLIP/VLM pseudo-labels filtered by reliability.
+
+
+• Yes. This is the right theoretical direction, with one refinement: do not say reliability alone improves concept learning. Say reliability improves the class-level target, and the audit anchor handles the image-level identifiability gap.
+
+  The clean framing is:
+
+  Class-level reliability solves prior bias.
+  Image-level audit anchoring solves non-identifiability.
+  Both are needed.
+
+  I would formalize the method as:
+
+  Pi_eff[m,y] =
+      alpha[m,y] * Pi_tilde[m,y]
+    + beta[m,y]  * Pi_audit[m,y]
+    + gamma[m,y] * rho[m]
+
+  with:
+
+  alpha + beta + gamma = 1
+
+  A simple first implementation:
+
+  alpha[m,y] = r[m,y]
+  beta[m,y]  = 1 - r[m,y]
+  gamma[m,y] = 0
+
+  so:
+
+  Pi_eff = r * Pi_tilde + (1-r) * Pi_audit
+
+  Then add audit concept anchoring:
+
+  L_total =
+      L_class
+    + lambda_prior * KL(Pi_eff || class_mean(c_hat))
+    + lambda_audit * BCE(c_hat_audit, c_audit)
+
+  I would make lambda_audit reliability-aware later, but not in the first version. First prove that audit anchoring fixes the observed failure.
+
+  Then the next version can weight audit anchoring more strongly for unreliable entries:
+
+  w_audit[m,y] = 1 - r[m,y]
+
+  For an audit image i with class y_i, concept BCE becomes:
+
+  L_audit =
+  sum_i sum_m (1 - r[m,y_i]) * BCE(c_hat_m(x_i), c_i[m])
+
+  That directly encodes your idea:
+
+  bad/uncertain prior -> stronger image-level anchor
+  reliable prior -> class-level prior is enough
+
+  The theory statement should be:
+
+  Reliability-weighted prior repair reduces class-level moment bias:
+  |Pi_eff - Pi_star| < |Pi_tilde - Pi_star|
+
+  Audit concept anchoring supplies pointwise constraints that class-level moments lack.
+  Therefore the method reduces concept error only when some anchor signal exists.
+
+  This matches your empirical results exactly:
+
+  repair alone did not help
+  oracle repair alone did not help
+  therefore the missing term is image-level anchoring
+
+  So the next implementation should add:
+
+  loss:
+    lambda_audit_concept: 0.0
+    audit_concept_weighting: reliability_inverse  # none | reliability_inverse
+
+  And test:
+
+  r-pcp-audit repair only
+  r-pcp-audit + unweighted audit BCE
+  r-pcp-audit + inverse-reliability-weighted audit BCE
+  supervised-cbm
+
+  That is the direction I’d move in.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+
+
+› instead of trying this and that, i want to know exactly why this approach is faling, i need to know the debug, print and debug outputs while testing or evaluating the input and output(s) and confidences as well as reliability score also if the concept was corrupted
+  or not. everything and in everywhere. i need to understand very deep, even feature level. why is this failing
+
+
+• I’ll add a targeted diagnostic path rather than scattering prints through the training loop. The useful artifact should answer, per run: what priors were corrupted, what reliability did, what class means the model actually learned, which concepts failed, what
+  predictions/confidences looked like per image, and whether the feature space separates classes/concepts.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Explored
+  └ Read concept_metrics.py, evaluate.py, base.py, __init__.py
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’m going to implement a diagnostics script that works from a saved run checkpoint. It will produce focused artifacts instead of noisy console spam: prior/reliability table, class-mean residuals, per-concept metrics, per-sample predictions/confidences, and feature
+  separability summaries.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Explored
+  └ Read io.py, rpcp.py, class_metrics.py
+    Search save_checkpoints|checkpoint.pt|repair_prior|prior_repair|thresholds in rpcp
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I found one important thing to instrument: normal evaluation currently does not pass reliability into the model’s class head, so for hybrid/prior heads diagnostics should compare class predictions with and without reliability. I’m adding that comparison plus prior/
+  concept/feature-level tables.
+
+• Added scripts/diagnose_run.py (+505 -0)
+      1 +#!/usr/bin/env python3
+      2 +"""Deep diagnostics for a saved R-PCP run.
+      3 +
+      4 +The script writes tables that make failure modes inspectable:
+      5 +
+      6 +* prior/reliability/effective-target entries, including corruption labels;
+      7 +* per-concept and per-class concept means/residuals;
+      8 +* per-sample predictions, probabilities and confidences;
+      9 +* feature-space separability summaries from pooled backbone features;
+     10 +* class-head metrics with and without reliability passed at evaluation time.
+     11 +
+     12 +Example::
+     13 +
+     14 +    python scripts/diagnose_run.py --run-dir runs/rpcp-derm7pt-r-pcp-audit_seed0
+     15 +"""
+     16 +
+     17 +from __future__ import annotations
+     18 +
+     19 +import argparse
+     20 +import json
+     21 +import sys
+     22 +from dataclasses import dataclass
+     23 +from pathlib import Path
+     24 +from typing import Any
+     25 +
+     26 +import numpy as np
+     27 +import pandas as pd
+     28 +import torch
+     29 +
+     30 +sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+     31 +
+     32 +from rpcp.config import ExperimentConfig  # noqa: E402
+     33 +from rpcp.data import build_dataloaders, build_prior_bundle, build_splits  # noqa: E402
+     34 +from rpcp.data.priors import PriorBundle  # noqa: E402
+     35 +from rpcp.evaluation.calibration import brier_score  # noqa: E402
+     36 +from rpcp.evaluation.class_metrics import class_metrics  # noqa: E402
+     37 +from rpcp.evaluation.concept_metrics import binary_f1, concept_metrics  # noqa: E402
+     38 +from rpcp.evaluation.ranking import roc_auc  # noqa: E402
+     39 +from rpcp.evaluation.reliability_metrics import reliability_metrics  # noqa: E402
+     40 +from rpcp.models.rpcp import build_model  # noqa: E402
+     41 +from rpcp.utils.io import from_dict, save_json  # noqa: E402
+     42 +from rpcp.utils.logging import configure_logging, get_logger  # noqa: E402
+     43 +
+     44 +logger = get_logger("diagnose")
+     45 +
+     46 +
+     47 +@dataclass(slots=True)
+     48 +class DebugPredictions:
+     49 +    indices: np.ndarray
+     50 +    labels: np.ndarray
+     51 +    concepts: np.ndarray | None
+     52 +    concept_probs: np.ndarray
+     53 +    concept_logits: np.ndarray
+     54 +    class_probs: np.ndarray
+     55 +    class_probs_with_reliability: np.ndarray | None
+     56 +    features: np.ndarray
+     57 +
+     58 +
+     59 +def main(argv: list[str] | None = None) -> int:
+     60 +    parser = argparse.ArgumentParser(description=__doc__)
+     61 +    parser.add_argument("--run-dir", type=Path, required=True)
+     62 +    parser.add_argument("--split", default="test", choices=["train_eval", "val", "test", "audit"])
+     63 +    parser.add_argument("--device", default=None)
+     64 +    parser.add_argument("--output-dir", type=Path, default=None)
+     65 +    parser.add_argument("--max-samples", type=int, default=None)
+     66 +    args = parser.parse_args(argv)
+     67 +    configure_logging()
+     68 +
+     69 +    checkpoint_path = args.run_dir / "checkpoint.pt"
+     70 +    if not checkpoint_path.exists():
+     71 +        raise FileNotFoundError(
+     72 +            f"{checkpoint_path} is missing. Re-run training with eval.save_checkpoints=true."
+     73 +        )
+     74 +    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+     75 +    config: ExperimentConfig = from_dict(ExperimentConfig, checkpoint["config"])
+     76 +    device = torch.device(args.device or config.resolved_device())
+     77 +
+     78 +    splits = build_splits(config.data)
+     79 +    priors = build_prior_bundle(config, splits)
+     80 +    loaders = build_dataloaders(splits, config.data, seed=config.seed)
+     81 +    if args.split not in loaders:
+     82 +        raise KeyError(f"Split '{args.split}' is unavailable; have {sorted(loaders)}")
+     83 +
+     84 +    model = build_model(
+     85 +        config,
+     86 +        n_concepts=splits.n_concepts,
+     87 +        n_classes=splits.n_classes,
+     88 +        priors=priors.observed,
+     89 +    )
+     90 +    model.load_state_dict(checkpoint["model"])
+     91 +    model.to(device)
+     92 +
+     93 +    reliability = torch.as_tensor(checkpoint.get("reliability", np.ones(priors.shape))).float()
+     94 +    effective_prior = build_effective_prior(config, priors, reliability)
+     95 +    debug = collect_debug_predictions(
+     96 +        model,
+     97 +        loaders[args.split],  # type: ignore[arg-type]
+     98 +        device=device,
+     99 +        priors=priors.observed.to(device),
+    100 +        reliability=reliability.to(device),
+    101 +    )
+    102 +
+    103 +    output_dir = args.output_dir or args.run_dir / f"diagnostics_{args.split}"
+    104 +    output_dir.mkdir(parents=True, exist_ok=True)
+    105 +
+    106 +    write_prior_table(output_dir, priors, reliability, effective_prior, debug, splits.concept_names, splits.class_names, config.eval.concept_threshold)
+    107 +    write_concept_tables(output_dir, debug, splits.concept_names, splits.class_names, config.eval.concept_threshold)
+    108 +    write_sample_tables(output_dir, debug, splits.concept_names, splits.class_names, config.eval.concept_threshold, max_samples=args.max_samples)
+    109 +    feature_summary = write_feature_tables(output_dir, debug, splits.concept_names, splits.class_names)
+    110 +
+    111 +    summary = build_summary(
+    112 +        config=config,
+    113 +        priors=priors,
+    114 +        reliability=reliability,
+    115 +        effective_prior=effective_prior,
+    116 +        debug=debug,
+    117 +        concept_names=splits.concept_names,
+    118 +        class_names=splits.class_names,
+    119 +        threshold=config.eval.concept_threshold,
+    120 +        feature_summary=feature_summary,
+    121 +    )
+    122 +    save_json(summary, output_dir / "summary.json")
+    123 +    print(json.dumps(summary, indent=2, default=float))
+    124 +    logger.info("Wrote diagnostics to %s", output_dir)
+    125 +    return 0
+    126 +
+    127 +
+    128 +def build_effective_prior(
+    129 +    config: ExperimentConfig,
+    130 +    priors: PriorBundle,
+    131 +    reliability: torch.Tensor,
+    132 +) -> torch.Tensor:
+    133 +    observed = priors.observed.float()
+    134 +    r = reliability.float().clamp(config.reliability.min_reliability, config.reliability.max_reliability)
+    135 +    match config.loss.prior_repair:
+    136 +        case "none":
+    137 +            return observed
+    138 +        case "background":
+    139 +            rho = observed.mean(dim=1, keepdim=True)
+    140 +            return r * observed + (1.0 - r) * rho
+    141 +        case "audit":
+    142 +            if priors.audit is None:
+    143 +                return observed
+    144 +            return r * observed + (1.0 - r) * priors.audit.float()
+    145 +        case other:
+    146 +            raise ValueError(f"Unknown loss.prior_repair='{other}'")
+    147 +
+    148 +
+    149 +@torch.no_grad()
+    150 +def collect_debug_predictions(
+    151 +    model: torch.nn.Module,
+    152 +    loader: torch.utils.data.DataLoader[dict[str, torch.Tensor]],
+    153 +    *,
+    154 +    device: torch.device,
+    155 +    priors: torch.Tensor,
+    156 +    reliability: torch.Tensor,
+    157 +) -> DebugPredictions:
+    158 +    was_training = model.training
+    159 +    model.eval()
+    160 +
+    161 +    indices: list[np.ndarray] = []
+    162 +    labels: list[np.ndarray] = []
+    163 +    concepts: list[np.ndarray] = []
+    164 +    concept_probs: list[np.ndarray] = []
+    165 +    concept_logits: list[np.ndarray] = []
+    166 +    class_probs: list[np.ndarray] = []
+    167 +    class_probs_with_reliability: list[np.ndarray] = []
+    168 +    features: list[np.ndarray] = []
+    169 +    any_concepts = False
+    170 +
+    171 +    for batch in loader:
+    172 +        images = batch["image"].to(device, non_blocking=True)
+    173 +        output = model(images, priors=priors, reliability=None, return_features=True)
+    174 +        reliable_output = model(images, priors=priors, reliability=reliability, return_features=False)
+    175 +        pooled = output.features.mean(dim=(-2, -1)) if output.features is not None else torch.empty(0)
+    176 +
+    177 +        indices.append(batch["index"].cpu().numpy())
+    178 +        labels.append(batch["label"].cpu().numpy())
+    179 +        concept_probs.append(output.concept_probs.detach().cpu().numpy())
+    180 +        concept_logits.append(output.concept_logits.detach().cpu().numpy())
+    181 +        class_probs.append(torch.softmax(output.class_logits, dim=-1).detach().cpu().numpy())
+    182 +        class_probs_with_reliability.append(
+    183 +            torch.softmax(reliable_output.class_logits, dim=-1).detach().cpu().numpy()
+    184 +        )
+    185 +        features.append(pooled.detach().cpu().numpy())
+    186 +        if bool(batch["has_concepts"].any()):
+    187 +            any_concepts = True
+    188 +            concepts.append(batch["concepts"].cpu().numpy())
+    189 +
+    190 +    model.train(was_training)
+    191 +    return DebugPredictions(
+    192 +        indices=np.concatenate(indices),
+    193 +        labels=np.concatenate(labels),
+    194 +        concepts=np.concatenate(concepts) if any_concepts else None,
+    195 +        concept_probs=np.concatenate(concept_probs),
+    196 +        concept_logits=np.concatenate(concept_logits),
+    197 +        class_probs=np.concatenate(class_probs),
+    198 +        class_probs_with_reliability=np.concatenate(class_probs_with_reliability),
+    199 +        features=np.concatenate(features),
+    200 +    )
+    201 +
+    202 +
+    203 +def write_prior_table(
+    204 +    output_dir: Path,
+    205 +    priors: PriorBundle,
+    206 +    reliability: torch.Tensor,
+    207 +    effective_prior: torch.Tensor,
+    208 +    debug: DebugPredictions,
+    209 +    concept_names: list[str],
+    210 +    class_names: list[str],
+    211 +    threshold: float,
+    212 +) -> None:
+    213 +    pred_means = split_class_means(debug.concept_probs, debug.labels, len(class_names))
+    214 +    true_means = None if debug.concepts is None else split_class_means(debug.concepts, debug.labels, len(class_names))
+    215 +    concept_f1_by_class = per_class_concept_f1(debug, len(class_names), threshold)
+    216 +
+    217 +    observed = priors.observed.numpy()
+    218 +    clean = None if priors.clean is None else priors.clean.numpy()
+    219 +    audit = None if priors.audit is None else priors.audit.numpy()
+    220 +    corrupt = None if priors.corruption_mask is None else priors.corruption_mask.numpy()
+    221 +    rows: list[dict[str, Any]] = []
+    222 +    for m, concept in enumerate(concept_names):
+    223 +        rho = float(observed[m].mean())
+    224 +        for y, class_name in enumerate(class_names):
+    225 +            clean_value = np.nan if clean is None else float(clean[m, y])
+    226 +            observed_value = float(observed[m, y])
+    227 +            effective_value = float(effective_prior[m, y])
+    228 +            predicted_value = float(pred_means[m, y])
+    229 +            rows.append(
+    230 +                {
+    231 +                    "concept": concept,
+    232 +                    "class": class_name,
+    233 +                    "m": m,
+    234 +                    "y": y,
+    235 +                    "prior_observed": observed_value,
+    236 +                    "prior_clean": clean_value,
+    237 +                    "prior_audit": np.nan if audit is None else float(audit[m, y]),
+    238 +                    "prior_background_rho": rho,
+    239 +                    "prior_effective": effective_value,
+    240 +                    "reliability": float(reliability[m, y]),
+    241 +                    "is_corrupted": np.nan if corrupt is None else bool(corrupt[m, y]),
+    242 +                    "prior_error_abs": (
+    243 +                        np.nan if clean is None else abs(observed_value - clean_value)
+    244 +                    ),
+    245 +                    "predicted_class_mean": predicted_value,
+    246 +                    "true_class_mean": (
+    247 +                        np.nan if true_means is None else float(true_means[m, y])
+    248 +                    ),
+    249 +                    "residual_observed_abs": abs(predicted_value - observed_value),
+    250 +                    "residual_effective_abs": abs(predicted_value - effective_value),
+    251 +                    "per_class_concept_f1": concept_f1_by_class[m, y],
+    252 +                }
+    253 +            )
+    254 +    pd.DataFrame(rows).to_csv(output_dir / "prior_reliability_entries.csv", index=False)
+    255 +
+    256 +
+    257 +def write_concept_tables(
+    258 +    output_dir: Path,
+    259 +    debug: DebugPredictions,
+    260 +    concept_names: list[str],
+    261 +    class_names: list[str],
+    262 +    threshold: float,
+    263 +) -> None:
+    264 +    if debug.concepts is None:
+    265 +        return
+    266 +    metrics = concept_metrics(
+    267 +        debug.concept_probs,
+    268 +        debug.concepts,
+    269 +        labels=debug.labels,
+    270 +        n_classes=len(class_names),
+    271 +        threshold=threshold,
+    272 +        concept_names=concept_names,
+    273 +    )
+    274 +    rows: list[dict[str, Any]] = []
+    275 +    for m, concept in enumerate(concept_names):
+    276 +        y_true = debug.concepts[:, m] > 0.5
+    277 +        y_prob = debug.concept_probs[:, m]
+    278 +        y_pred = y_prob >= threshold
+    279 +        rows.append(
+    280 +            {
+    281 +                "concept": concept,
+    282 +                "m": m,
+    283 +                "f1": float(metrics.per_concept_f1[m]),
+    284 +                "auroc": float(metrics.per_concept_auroc[m]),
+    285 +                "true_prevalence": float(y_true.mean()),
+    286 +                "predicted_prevalence": float(y_pred.mean()),
+    287 +                "mean_probability": float(y_prob.mean()),
+    288 +                "mean_probability_positive": (
+    289 +                    float(y_prob[y_true].mean()) if y_true.any() else np.nan
+    290 +                ),
+    291 +                "mean_probability_negative": (
+    292 +                    float(y_prob[~y_true].mean()) if (~y_true).any() else np.nan
+    293 +                ),
+    294 +                "brier": brier_score(y_prob, y_true.astype(float)),
+    295 +            }
+    296 +        )
+    297 +    pd.DataFrame(rows).to_csv(output_dir / "concept_summary.csv", index=False)
+    298 +
+    299 +
+    300 +def write_sample_tables(
+    301 +    output_dir: Path,
+    302 +    debug: DebugPredictions,
+    303 +    concept_names: list[str],
+    304 +    class_names: list[str],
+    305 +    threshold: float,
+    306 +    *,
+    307 +    max_samples: int | None,
+    308 +) -> None:
+    309 +    class_pred = debug.class_probs.argmax(axis=1)
+    310 +    class_conf = debug.class_probs.max(axis=1)
+    311 +    reliable_probs = debug.class_probs_with_reliability
+    312 +    reliable_pred = None if reliable_probs is None else reliable_probs.argmax(axis=1)
+    313 +    reliable_conf = None if reliable_probs is None else reliable_probs.max(axis=1)
+    314 +
+    315 +    rows: list[dict[str, Any]] = []
+    316 +    n = len(debug.labels) if max_samples is None else min(max_samples, len(debug.labels))
+    317 +    for i in range(n):
+    318 +        row: dict[str, Any] = {
+    319 +            "index": int(debug.indices[i]),
+    320 +            "true_class": class_names[int(debug.labels[i])],
+    321 +            "pred_class": class_names[int(class_pred[i])],
+    322 +            "class_confidence": float(class_conf[i]),
+    323 +            "class_correct": bool(class_pred[i] == debug.labels[i]),
+    324 +        }
+    325 +        for y, class_name in enumerate(class_names):
+    326 +            row[f"class_prob/{class_name}"] = float(debug.class_probs[i, y])
+    327 +            if reliable_probs is not None:
+    328 +                row[f"class_prob_with_reliability/{class_name}"] = float(reliable_probs[i, y])
+    329 +        if reliable_pred is not None and reliable_conf is not None:
+    330 +            row["pred_class_with_reliability"] = class_names[int(reliable_pred[i])]
+    331 +            row["class_confidence_with_reliability"] = float(reliable_conf[i])
+    332 +            row["class_prediction_changed_by_reliability"] = bool(reliable_pred[i] != class_pred[i])
+    333 +        for m, concept in enumerate(concept_names):
+    334 +            prob = float(debug.concept_probs[i, m])
+    335 +            pred = prob >= threshold
+    336 +            row[f"concept_prob/{concept}"] = prob
+    337 +            row[f"concept_logit/{concept}"] = float(debug.concept_logits[i, m])
+    338 +            row[f"concept_pred/{concept}"] = bool(pred)
+    339 +            if debug.concepts is not None:
+    340 +                true = bool(debug.concepts[i, m] > 0.5)
+    341 +                row[f"concept_true/{concept}"] = true
+    342 +                row[f"concept_correct/{concept}"] = bool(pred == true)
+    343 +        rows.append(row)
+    344 +    pd.DataFrame(rows).to_csv(output_dir / "sample_predictions.csv", index=False)
+    345 +
+    346 +
+    347 +def write_feature_tables(
+    348 +    output_dir: Path,
+    349 +    debug: DebugPredictions,
+    350 +    concept_names: list[str],
+    351 +    class_names: list[str],
+    352 +) -> dict[str, float]:
+    353 +    features = l2_normalize(debug.features)
+    354 +    class_rows: list[dict[str, Any]] = []
+    355 +    class_centroids = []
+    356 +    for y, class_name in enumerate(class_names):
+    357 +        mask = debug.labels == y
+    358 +        centroid = features[mask].mean(axis=0) if mask.any() else np.full(features.shape[1], np.nan)
+    359 +        class_centroids.append(centroid)
+    360 +        class_rows.append(
+    361 +            {
+    362 +                "class": class_name,
+    363 +                "y": y,
+    364 +                "n": int(mask.sum()),
+    365 +                "mean_feature_norm": float(np.linalg.norm(debug.features[mask], axis=1).mean()) if mask.any() else np.nan,
+    366 +            }
+    367 +        )
+    368 +    class_centroids_arr = l2_normalize(np.vstack(class_centroids))
+    369 +    centroid_scores = features @ class_centroids_arr.T
+    370 +    nearest_centroid = centroid_scores.argmax(axis=1)
+    371 +    nearest_class_accuracy = float(np.mean(nearest_centroid == debug.labels))
+    372 +    pd.DataFrame(class_rows).to_csv(output_dir / "feature_class_summary.csv", index=False)
+    373 +
+    374 +    concept_rows: list[dict[str, Any]] = []
+    375 +    if debug.concepts is not None:
+    376 +        for m, concept in enumerate(concept_names):
+    377 +            positive = debug.concepts[:, m] > 0.5
+    378 +            negative = ~positive
+    379 +            row: dict[str, Any] = {
+    380 +                "concept": concept,
+    381 +                "m": m,
+    382 +                "n_positive": int(positive.sum()),
+    383 +                "n_negative": int(negative.sum()),
+    384 +            }
+    385 +            if positive.any() and negative.any():
+    386 +                pos_centroid = l2_normalize(features[positive].mean(axis=0, keepdims=True))[0]
+    387 +                neg_centroid = l2_normalize(features[negative].mean(axis=0, keepdims=True))[0]
+    388 +                score = features @ pos_centroid - features @ neg_centroid
+    389 +                row.update(
+    390 +                    {
+    391 +                        "centroid_cosine_gap": float(pos_centroid @ neg_centroid),
+    392 +                        "feature_centroid_auroc": roc_auc(positive.astype(float), score),
+    393 +                    }
+    394 +                )
+    395 +            else:
+    396 +                row.update({"centroid_cosine_gap": np.nan, "feature_centroid_auroc": np.nan})
+    397 +            concept_rows.append(row)
+    398 +    pd.DataFrame(concept_rows).to_csv(output_dir / "feature_concept_summary.csv", index=False)
+    399 +    return {"nearest_class_centroid_accuracy": nearest_class_accuracy}
+    400 +
+    401 +
+    402 +def build_summary(
+    403 +    *,
+    404 +    config: ExperimentConfig,
+    405 +    priors: PriorBundle,
+    406 +    reliability: torch.Tensor,
+    407 +    effective_prior: torch.Tensor,
+    408 +    debug: DebugPredictions,
+    409 +    concept_names: list[str],
+    410 +    class_names: list[str],
+    411 +    threshold: float,
+    412 +    feature_summary: dict[str, float],
+    413 +) -> dict[str, Any]:
+    414 +    class_no_r = class_metrics(debug.class_probs, debug.labels, class_names=class_names)
+    415 +    class_with_r = (
+    416 +        None
+    417 +        if debug.class_probs_with_reliability is None
+    418 +        else class_metrics(debug.class_probs_with_reliability, debug.labels, class_names=class_names)
+    419 +    )
+    420 +    concept_result = (
+    421 +        None
+    422 +        if debug.concepts is None
+    423 +        else concept_metrics(
+    424 +            debug.concept_probs,
+    425 +            debug.concepts,
+    426 +            labels=debug.labels,
+    427 +            n_classes=len(class_names),
+    428 +            threshold=threshold,
+    429 +            concept_names=concept_names,
+    430 +        )
+    431 +    )
+    432 +    rel = reliability_metrics(
+    433 +        reliability,
+    434 +        corruption_mask=priors.corruption_mask,
+    435 +        prior_error=priors.prior_error(),
+    436 +        per_entry_concept_f1=None if concept_result is None else concept_result.per_class_concept_f1,
+    437 +        threshold=config.eval.concept_threshold,
+    438 +    )
+    439 +    return {
+    440 +        "run": {
+    441 +            "name": config.name,
+    442 +            "tag": config.tag,
+    443 +            "method_like_reliability_mode": config.reliability.mode,
+    444 +            "class_head": str(config.model.class_head),
+    445 +            "prior_repair": config.loss.prior_repair,
+    446 +            "concept_threshold": threshold,
+    447 +        },
+    448 +        "class_metrics_no_reliability_at_eval": class_no_r.as_dict("class/"),
+    449 +        "class_metrics_with_reliability_at_eval": (
+    450 +            None if class_with_r is None else class_with_r.as_dict("class/")
+    451 +        ),
+    452 +        "class_confusion_no_reliability": class_no_r.confusion.tolist(),
+    453 +        "class_confusion_with_reliability": (
+    454 +            None if class_with_r is None else class_with_r.confusion.tolist()
+    455 +        ),
+    456 +        "concept_metrics": None if concept_result is None else concept_result.as_dict("concept/"),
+    457 +        "reliability_metrics": rel.as_dict("reliability/"),
+    458 +        "prior_error_mean_observed": (
+    459 +            None if priors.prior_error() is None else float(priors.prior_error().mean())
+    460 +        ),
+    461 +        "prior_error_mean_effective": (
+    462 +            None
+    463 +            if priors.clean is None
+    464 +            else float((effective_prior - priors.clean).abs().mean())
+    465 +        ),
+    466 +        "feature_summary": feature_summary,
+    467 +    }
+    468 +
+    469 +
+    470 +def split_class_means(values: np.ndarray, labels: np.ndarray, n_classes: int) -> np.ndarray:
+    471 +    means = np.full((values.shape[1], n_classes), np.nan)
+    472 +    for y in range(n_classes):
+    473 +        mask = labels == y
+    474 +        if mask.any():
+    475 +            means[:, y] = values[mask].mean(axis=0)
+    476 +    return means
+    477 +
+    478 +
+    479 +def per_class_concept_f1(
+    480 +    debug: DebugPredictions,
+    481 +    n_classes: int,
+    482 +    threshold: float,
+    483 +) -> np.ndarray:
+    484 +    n_concepts = debug.concept_probs.shape[1]
+    485 +    out = np.full((n_concepts, n_classes), np.nan)
+    486 +    if debug.concepts is None:
+    487 +        return out
+    488 +    predictions = debug.concept_probs >= threshold
+    489 +    for y in range(n_classes):
+    490 +        mask = debug.labels == y
+    491 +        if not mask.any():
+    492 +            continue
+    493 +        for m in range(n_concepts):
+    494 +            out[m, y] = binary_f1(debug.concepts[mask, m], predictions[mask, m])
+    495 +    return out
+    496 +
+    497 +
+    498 +def l2_normalize(values: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    499 +    values = np.asarray(values, dtype=np.float64)
+    500 +    norms = np.linalg.norm(values, axis=1, keepdims=True)
+    501 +    return values / np.maximum(norms, eps)
+    502 +
+    503 +
+    504 +if __name__ == "__main__":
+    505 +    raise SystemExit(main())
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The diagnostic script is in place. I’ll run its help and a static import check to catch syntax/import issues without requiring a trained checkpoint.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Explored
+  └ Search checkpoint.pt in runs
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 -m py_compile scripts/diagnose_run.py
+  └ (no output)
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 scripts/diagnose_run.py --help | sed -n '1,120p'
+  └ usage: diagnose_run.py [-h] --run-dir RUN_DIR
+                           [--split {train_eval,val,test,audit}] [--device DEVICE]
+    … +15 lines (ctrl + t to view transcript)
+      --output-dir OUTPUT_DIR
+      --max-samples MAX_SAMPLES
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Implemented a deep diagnostic script: scripts/diagnose_run.py.
+
+  It does not guess. It writes the evidence you need to see why the method is failing.
+
+  Run training with checkpoints enabled:
+
+  python3 scripts/train.py --config configs/derm7pt.yaml \
+    --method '[pcp,r-pcp-audit,oracle]' \
+    -o data.root=/kaggle/input/datasets/salam035/derm7pt/derm7pt \
+       model.backbone=densenet121 model.pretrained=true model.class_head=hybrid \
+       data.image_size=224 data.batch_size=16 data.eval_batch_size=32 data.num_workers=0 \
+       optim.epochs=30 optim.lr=0.00005 optim.backbone_lr=0.000005 optim.grad_clip=0.5 \
+       reliability.warmup_epochs=8 reliability.mid_epochs=14 reliability.n_folds=1 \
+       data.audit_fraction=0.1 \
+       priors.corruption.mode=adversarial_flip priors.corruption.alpha=1.0 priors.corruption.fraction=0.5 \
+       eval.concept_threshold=0.2 \
+       loss.prior_repair=audit \
+       eval.save_checkpoints=true
+
+  Then diagnose one run:
+
+  python3 scripts/diagnose_run.py \
+    --run-dir runs/rpcp-derm7pt-r-pcp-audit_seed0 \
+    --split test
+
+  It writes:
+
+  runs/.../diagnostics_test/summary.json
+  runs/.../diagnostics_test/prior_reliability_entries.csv
+  runs/.../diagnostics_test/concept_summary.csv
+  runs/.../diagnostics_test/sample_predictions.csv
+  runs/.../diagnostics_test/feature_class_summary.csv
+  runs/.../diagnostics_test/feature_concept_summary.csv
+
+  What to inspect:
+
+  prior_reliability_entries.csv
+
+  Shows every (concept, class) prior entry:
+
+  prior_observed
+  prior_clean
+  prior_audit
+  prior_background_rho
+  prior_effective
+  reliability
+  is_corrupted
+  predicted_class_mean
+  true_class_mean
+  residual_observed_abs
+  residual_effective_abs
+  per_class_concept_f1
+
+  This answers:
+
+  Did repair actually reduce prior error?
+  Did the model's learned class means move toward Pi_eff?
+  Are corrupted entries getting low reliability?
+
+  concept_summary.csv
+
+  Shows per concept:
+
+  f1
+  auroc
+  true_prevalence
+  predicted_prevalence
+  mean_probability_positive
+  mean_probability_negative
+  brier
+
+  This answers:
+
+  Which concepts are failing?
+  Are positives getting higher probabilities than negatives?
+  Is F1 bad because thresholding is bad or because ranking is bad?
+
+  sample_predictions.csv
+
+  Shows per image:
+
+  true class
+  predicted class
+  class confidence
+  class probs
+  class probs with reliability
+  concept probabilities/logits
+  concept true labels
+  concept correctness
+
+  This answers:
+
+  Is the model confidently wrong?
+  Does passing reliability into the class head change predictions?
+  Which samples/concepts fail?
+
+  feature_concept_summary.csv
+
+  Shows feature-level separability per concept:
+
+  feature_centroid_auroc
+  centroid_cosine_gap
+  n_positive
+  n_negative
+
+  This answers:
+
+  Does the backbone feature space even separate the concepts?
+
+  summary.json
+
+  Includes:
+
+  class metrics without reliability at eval
+  class metrics with reliability at eval
+  confusion matrices
+  concept metrics
+  reliability metrics
+  mean observed prior error
+  mean effective prior error
+  feature nearest-centroid class accuracy
+
+  How this will identify the failure:
+
+  If:
+
+  prior_error_mean_effective < prior_error_mean_observed
+
+  but:
+
+  predicted_class_mean is still far from prior_effective
+
+  then the prior loss is too weak or being bypassed.
+
+  If:
+
+  feature_concept_summary.feature_centroid_auroc ≈ 0.5
+
+  then the image features do not separate that concept, so class-level priors cannot recover it.
+
+  If:
+
+  class metrics good
+  concept metrics bad
+
+  then the model is using non-concept shortcuts for classification.
+
+  If:
+
+  class_probs and class_probs_with_reliability are almost identical
+
+  then reliability is not affecting the class decision path at evaluation.
+
+  This is the right next step: stop changing the method until these diagnostics show where the information flow breaks.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+
+─ Worked for 2m 54s ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› tion=0.50 -> 50.0% of entries corrupted
+  {
+    "run": {
+      "name": "rpcp-derm7pt",
+      "tag": "r-pcp-audit_seed0",
+      "method_like_reliability_mode": "audit",
+      "class_head": "hybrid",
+      "prior_repair": "audit",
+      "concept_threshold": 0.2
+    },
+    "class_metrics_no_reliability_at_eval": {
+      "class/accuracy": 0.7468354430379747,
+      "class/macro_f1": 0.6978828856391115,
+      "class/macro_auroc": 0.8037877390395376,
+      "class/balanced_accuracy": 0.6988716718932546
+    },
+    "class_metrics_with_reliability_at_eval": {
+      "class/accuracy": 0.7164556962025317,
+      "class/macro_f1": 0.6582622667161042,
+      "class/macro_auroc": 0.7504457972083871,
+      "class/balanced_accuracy": 0.6574893931009038
+    },
+    "class_confusion_no_reliability": [
+      [
+        227,
+        51
+      ],
+      [
+        49,
+        68
+      ]
+    ],
+    "class_confusion_with_reliability": [
+      [
+        223,
+        55
+      ],
+      [
+        57,
+        60
+      ]
+    ],
+    "concept_metrics": {
+      "concept/macro_f1": 0.4231047314922772,
+      "concept/macro_auroc": 0.47877842290335737,
+      "concept/ece": 0.3639080286541759,
+      "concept/brier": 0.3968423340181007,
+      "concept/accuracy": 0.41952983725135623
+    },
+    "reliability_metrics": {
+      "reliability/auroc": 0.7551020408163265,
+      "reliability/auprc": 0.8626373626373627,
+      "reliability/spearman_prior_error": -0.6219475018756582,
+      "reliability/spearman_concept_f1": 0.03736263736263736,
+      "reliability/spearman_rater_agreement": NaN,
+      "reliability/ece": 0.19545730336436207,
+      "reliability/mean_clean": 0.8541328310966492,
+      "reliability/mean_corrupt": 0.4121541976928711,
+      "reliability/separation": 0.4419786334037781,
+      "reliability/detect_precision": 1.0,
+      "reliability/detect_recall": 0.5714285714285714,
+      "reliability/detect_f1": 0.7272727272727273,
+      "reliability/detect_flagged_fraction": 0.2857142857142857
+    },
+    "prior_error_mean_observed": 0.23626410961151123,
+    "prior_error_mean_effective": 0.0494832918047905,
+    "feature_summary": {
+      "nearest_class_centroid_accuracy": 0.779746835443038
+    }
+  }
+
+
+• This diagnostic is very clear.
+
+  What Is Working
+  Prior repair is working extremely well:
+
+  prior_error_mean_observed:  0.2363
+  prior_error_mean_effective: 0.0495
+
+  So the repaired prior Pi_eff is much closer to the clean prior than the corrupted Pi_tilde.
+
+  Reliability is also working:
+
+  reliability AUROC:      0.755
+  mean_clean:             0.854
+  mean_corrupt:           0.412
+  detect F1:              0.727
+
+  So the method correctly identifies many bad prior entries and repairs the class-level prior table.
+
+  What Is Failing
+  Despite the repaired prior being much better, concept learning is bad:
+
+  concept macro AUROC: 0.4788
+  concept macro F1:    0.4231
+
+  This means the repaired class-level prior is not being converted into correct image-level concepts.
+
+  That is the failure.
+
+  Most Important Clue
+  Feature-level class separation is strong:
+
+  nearest_class_centroid_accuracy: 0.7797
+
+  and class metrics are decent:
+
+  class F1 without reliability: 0.6979
+
+  So the backbone features separate classes.
+
+  But concept AUROC is below chance:
+
+  0.4788
+
+  So the features/model are learning class-discriminative shortcuts, not concept-aligned representations.
+
+  Reliability In Class Head Hurts
+  Evaluation with reliability in the class head is worse:
+
+  class F1 no reliability:    0.6979
+  class F1 with reliability:  0.6583
+
+  So reliability is improving prior correctness, but when applied directly to class scoring, it removes/weakens signals the classifier was using. That suggests class prediction is relying on prior-derived correlations that are not the same as real concepts.
+
+  Diagnosis
+  The approach is failing because:
+
+  Class-level prior repair fixes the target moments,
+  but class-level moment matching still does not identify image-level concepts.
+
+  The model can satisfy or partially follow class-level averages while assigning concepts incorrectly per image. The classifier still works because the feature space separates classes, not because the concept bottleneck is semantically correct.
+
+  In plain terms:
+
+  Pi_eff is good.
+  r is good.
+  features classify disease.
+  concepts are not grounded.
+
+  Where To Look Next
+  Open these CSVs:
+
+  diagnostics_test/prior_reliability_entries.csv
+  diagnostics_test/concept_summary.csv
+  diagnostics_test/feature_concept_summary.csv
+
+  You want to check:
+
+  1. In prior_reliability_entries.csv:
+
+  residual_effective_abs
+  predicted_class_mean
+  true_class_mean
+  prior_effective
+
+  If predicted_class_mean is far from prior_effective, then the prior loss is not strong enough.
+
+  If predicted_class_mean matches prior_effective but per_class_concept_f1 is bad, then the moment constraint is satisfied but image-level assignments are wrong. That confirms non-identifiability.
+
+  2. In concept_summary.csv:
+
+  Check:
+
+  mean_probability_positive
+  mean_probability_negative
+  auroc
+
+  If positives do not have higher probabilities than negatives, the concept head is not learning visual concepts.
+
+  3. In feature_concept_summary.csv:
+
+  Check:
+
+  feature_centroid_auroc
+
+  If this is near 0.5 for concepts, then even the backbone feature space does not separate concept presence well.
+
+  Conclusion
+  This is not primarily a prior-reliability failure anymore.
+
+  It is an image-level grounding failure.
+
+  The next method must add image-level anchor supervision:
+
+  L_audit_concept = BCE(c_hat(x), c)
+
+  on audit images.
+
+  Your theoretical statement is now empirically justified:
+
+  Reliability-weighted repair reduces class-level prior bias,
+  but image-level audit anchoring is required to resolve the non-identifiability of class-level moment constraints.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+
+
+› /Users/salam/Downloads/kaggle/working/rpcp/runs you have everything here, folder may contain subfolder. analyze those and let me know the problem
+
+
+• I’ll inspect the saved run artifacts under that Kaggle runs directory: summaries, histories, reliability matrices, prior files, and any diagnostics CSVs. I’ll keep it read-only and focus on explaining the failure from the actual artifacts.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Explored
+  └ Search summary.json in runs
+    List runs
+    List runs
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• There are three saved runs here: pcp, oracle, and r-pcp-audit, plus diagnostics for the audit run. I’ll parse the summaries and CSV diagnostics into compact comparison tables.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import json
+  │ from pathlib import Path
+  │ … +11 lines
+  └
+     rpcp-derm7pt-oracle_seed0
+    … +32 lines (ctrl + t to view transcript)
+    prior/delta 0.9289907813072205
+    method mode audit repair audit class_head hybrid
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import pandas as pd
+  │ from pathlib import Path
+  │ … +6 lines
+  └
+    == concept_summary.csv
+    … +21 lines (ctrl + t to view transcript)
+       nevus  0 278          26.017227
+    melanoma  1 117          24.799719
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import pandas as pd
+  │ from pathlib import Path
+  │ … +10 lines
+  └ shape (14, 17)
+    ['concept', 'class', 'm', 'y', 'prior_observed', 'prior_clean', 'prior_audit', 'prior_background_rho', 'prior_effective', 'reliability', 'is_corrupted', 'prior_error_abs', 'predicted_class_mean', 'true_class_mean', 'residual_observed_abs',
+    … +22 lines (ctrl + t to view transcript)
+    False            0.854133         0.000000                0.167790               0.184919
+    True             0.412154         0.472528                0.394349               0.180444
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The run-level comparison already shows the key symptom: oracle, with perfect reliability and audit repair, is not better than PCP. I’m waiting on the per-entry diagnostics now to see whether the model ignores the repaired target or whether moment matching itself is
+  non-identifying.
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The per-entry table is the smoking gun: repaired priors are close to clean, but the learned class means are often far from the repaired targets, especially for corrupted entries. Also, feature-level concept separability is strong, so the backbone contains concept
+  signal; the concept head is not extracting it correctly.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import json
+  │ from pathlib import Path
+  │ … +8 lines
+  └
+    == pcp
+    … +34 lines (ctrl + t to view transcript)
+    {'epoch': 29, 'phase': 'weighted', 'train/loss_total': 1.0518778443336487, 'train/loss_cls': 0.5001210078597069, 'train/loss_match': 0.35935432985425, 'train/loss_prior': 0.2905665159225464, 'train/loss_ent': 1.492945957183838, 'train/loss_concept_supervised':
+    None, 'val/concept_macro_f1': 0.42165748730759844, 'val/concept_macro_auroc': 0.4594262497559026, 'val/class_macro_f1': 0.7142405699675372, 'reliability/mean': 0.6331436038017273}
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import numpy as np
+  │ from pathlib import Path
+  │ … +5 lines
+  └ prior_observed.npy (7, 2)
+     [[0.139 0.488]
+    … +40 lines (ctrl + t to view transcript)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    numpy._core._exceptions._UFuncOutputCastingError: Cannot cast ufunc 'multiply' output from dtype('float64') to dtype('bool') with casting rule 'same_kind'
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import pandas as pd
+  │ from pathlib import Path
+  │ … +13 lines
+  └ samples 395 columns 47
+    class confidence summary
+    … +38 lines (ctrl + t to view transcript)
+    1.00                               0.880853                        0.999972                                   0.999978                        0.998981                             0.778921                                  0.999702
+    0.920546
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The histories add another key point: after weighted training begins, oracle and r-pcp-audit have much higher prior loss than PCP, but validation concept AUROC keeps dropping. That means the repaired/weighted prior signal is fighting the model, not grounding
+  concepts.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import json
+  │ from pathlib import Path
+  │ … +14 lines
+  └
+    == pcp
+    … +20 lines (ctrl + t to view transcript)
+    optim {'epochs': 30, 'lr': 5e-05, 'backbone_lr': 5e-06, 'grad_clip': 0.5}
+    corruption {'mode': 'adversarial_flip', 'alpha': 1.0, 'fraction': 0.5, 'seed': 0, 'llm_bias_strength': 0.6, 'tolerance': 0.001}
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import pandas as pd
+  │ df=pd.read_csv('/Users/salam/Downloads/kaggle/working/rpcp/runs/rpcp-derm7pt-r-pcp-audit_seed0/diagnostics_test/concept_summary.csv')
+  │ … +3 lines
+  └                      concept  true_prevalence  predicted_prevalence  mean_probability  mean_probability_positive  mean_probability_negative  prob_gap_pos_minus_neg       f1    auroc
+    atypical_vascular_structures         0.207595              0.989873          0.812680                   0.679525                   0.847564               -0.168039 0.342495 0.269890
+    … +4 lines (ctrl + t to view transcript)
+          irregular_pigmentation         0.313924              0.437975          0.205836                   0.254626                   0.183511                0.071115 0.451178 0.630074
+           regression_structures         0.268354              0.415190          0.221078                   0.311665                   0.187852                0.123814 0.481481 0.672129
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ import pandas as pd
+  │ from pathlib import Path
+  │ … +9 lines
+  └                      concept    class  is_corrupted  true_class_mean  prior_clean  prior_observed  prior_audit  prior_effective  predicted_class_mean  prior_effective_minus_true  predicted_class_mean_minus_true  reliability
+        atypical_pigment_network    nevus         False         0.125899     0.139134        0.139134     0.135145         0.139057              0.144108                    0.013157                         0.018209     0.980734
+    … +18 lines (ctrl + t to view transcript)
+    prior_effective 0.050273275801113675
+    predicted_class_mean 0.2980965194957597
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I found a concrete configuration-level reason too: these saved runs have loss.match_reliability_weighted=false. With model.class_head=hybrid, the class-head prior component and matching path are still using the corrupted prior table without reliability gating. That
+  gives the model a strong incentive to keep the corrupted concept directions.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Explored
+  └ Read matching.py
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I analyzed the saved artifacts. The problem is now specific.
+
+  Short Diagnosis
+  The failure is not reliability detection, not prior repair, and not the backbone.
+
+  It is this:
+
+  The repaired class-level prior is good,
+  but the concept head does not learn image-level concepts.
+
+  Your diagnostics show:
+
+  prior_error_mean_observed:  0.2363
+  prior_error_mean_effective: 0.0495
+
+  So Pi_eff is much closer to the clean prior. That part works.
+
+  But learned concept class means are bad:
+
+  mean abs error of predicted_class_mean vs true_class_mean: 0.2981
+  mean abs error of Pi_eff vs true_class_mean:               0.0503
+
+  So the repaired target is good, but the model does not follow it.
+
+  Smoking Gun
+  From concept_summary.csv, several concepts are inverted or saturated:
+
+  blue_whitish_veil:
+    true prevalence: 0.190
+    predicted prevalence: 0.995
+    positive prob: 0.653
+    negative prob: 0.788
+    AUROC: 0.334
+
+  atypical_vascular_structures:
+    true prevalence: 0.208
+    predicted prevalence: 0.990
+    positive prob: 0.680
+    negative prob: 0.848
+    AUROC: 0.270
+
+  irregular_dots_and_globules:
+    true prevalence: 0.448
+    predicted prevalence: 0.997
+    positive prob: 0.755
+    negative prob: 0.821
+    AUROC: 0.386
+
+  For these, negatives get higher concept probability than positives. That means the concept head is not merely weak; for some concepts it learned the wrong direction.
+
+  But Features Are Good
+  Feature-level separability is strong:
+
+  feature_centroid_auroc:
+    blue_whitish_veil:              0.913
+    atypical_vascular_structures:   0.865
+    irregular_streaks:              0.862
+    atypical_pigment_network:       0.845
+
+  So the backbone contains concept information. The problem is the concept head/training objective, not the image features.
+
+  Concrete Config Problem
+  Your saved runs have:
+
+  model.class_head = hybrid
+  loss.match_reliability_weighted = false
+
+  That means L_match and the hybrid prior-similarity class-head path still use the corrupted prior table without reliability gating. So even while L_prior uses repaired Pi_eff, another prior-guided path is still pushing the concept vector according to corrupted prior
+  geometry.
+
+  That creates a conflict:
+
+  L_prior says: follow repaired prior.
+  L_match / hybrid prior head says: be class-discriminative under corrupted prior.
+  L_class says: classify, even if concepts are semantically wrong.
+
+  The model chooses class-discriminative latent concepts, not real concepts.
+
+  What This Means
+  The current approach is failing because it only repairs the class-level target, but it does not sufficiently ground image-level concepts, and it may still leak corrupted prior pressure through the matching/class-head path.
+
+  The exact failure chain is:
+
+  1. Reliability detects bad priors reasonably well.
+  2. Audit repair makes Pi_eff close to clean prior.
+  3. But concept head predictions do not match Pi_eff or true image concepts.
+  4. Backbone features separate concepts, so visual signal exists.
+  5. Training objective maps those features into wrong/saturated concept outputs.
+  6. Classification remains decent because the model can use concept layer as latent class features.
+
+  Direction
+  First isolate the objective conflict:
+
+  loss.match_reliability_weighted=true
+
+  and for a stricter isolation:
+
+  loss.lambda_match=0.0
+  model.class_head=linear
+
+  That tells you whether repaired L_prior alone can shape concepts.
+
+  But the deeper fix is still image-level anchoring:
+
+  L_audit_concept = BCE(c_hat(x), c)
+
+  on audit images, ideally weighted more for low reliability entries:
+
+  weight[m,y_i] = 1 - r[m,y_i]
+
+  Because your diagnostics prove the missing piece:
+
+  Pi_eff is correct at class level,
+  features contain concept signal,
+  but no loss anchors the concept head to map image features to true concept labels.
+
+  So the next real method should be:
+
+  audit repair + reliability-gated matching + audit concept BCE
+
+  Not more prior repair alone.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+
+─ Worked for 1m 59s ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› so fix the problems and write me the command to check if it works or not
+
+
+• I’ll make two concrete fixes: add an audit concept-anchor loss on the audit loader, and make it optionally stronger for low-reliability concept/class entries. Then I’ll give you a diagnostic command that isolates whether the repaired priors plus image-level
+  anchoring actually move concept predictions.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Explored
+  └ Read trainer.py, config.py, base.yaml
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’m applying the audit-anchor implementation now. It will add loss.lambda_audit_concept and loss.audit_concept_weighting, then train on the audit loader with BCE on concept logits.
+
+• Edited 3 files (+105 -1)
+  └ configs/base.yaml (+2 -0)
+    77    lambda_concept: 0.0      # >0 only for the supervised-CBM upper bound
+    78 +  lambda_audit_concept: 0.0
+    79 +  audit_concept_weighting: none  # none | inverse_reliability
+    80    prior_loss: bernoulli    # bernoulli (R-PCP-BernKL) | pcp_kl (R-PCP-PCPKL)
+
+  └ rpcp/config.py (+6 -0)
+    208      lambda_concept: float = 0.0
+    209 +    #: Concept supervision on the held-out audit split. Unlike
+    210 +    #: ``lambda_concept``, this is the small-budget anchor used by audited R-PCP.
+    211 +    lambda_audit_concept: float = 0.0
+    212 +    #: ``none`` gives every audited concept equal weight; ``inverse_reliability``
+    213 +    #: anchors low-reliability class/concept entries more strongly.
+    214 +    audit_concept_weighting: str = "none"  # none | inverse_reliability
+    215      prior_loss: PriorLossType = PriorLossType.BERNOULLI
+
+  └ rpcp/training/trainer.py (+97 -1)
+     29  import torch
+     30 +import torch.nn.functional as F
+     31  from torch.utils.data import DataLoader
+        ⋮
+    292
+    292 -        return {key: value / max(1, n_batches) for key, value in totals.items()}
+    293 +        metrics = {key: value / max(1, n_batches) for key, value in totals.items()}
+    294 +        audit_metrics = self.train_audit_anchor(scaler)
+    295 +        metrics.update(audit_metrics)
+    296 +        return metrics
+    297 +
+    298 +    def train_audit_anchor(self, scaler: torch.amp.GradScaler) -> dict[str, float]:
+    299 +        """Optional image-level concept anchor on the audit split.
+    300 +
+    301 +        This is deliberately separate from the main train loader: audit images
+    302 +        are not folded back into ordinary class/prior training.  They only
+    303 +        provide pointwise concept constraints for the configured audit budget.
+    304 +        """
+    305 +        if self.config.loss.lambda_audit_concept <= 0:
+    306 +            return {}
+    307 +        if "audit" not in self.loaders:
+    308 +            raise ValueError(
+    309 +                "loss.lambda_audit_concept > 0 requires an audit split; set "
+    310 +                "data.audit_fraction > 0"
+    311 +            )
+    312 +
+    313 +        reliability = self.reliability_module()
+    314 +        total_loss = 0.0
+    315 +        n_batches = 0
+    316 +        self.model.train()
+    317 +        for batch in self.loaders["audit"]:
+    318 +            images = batch["image"].to(self.device, non_blocking=True)
+    319 +            labels = batch["label"].to(self.device, non_blocking=True)
+    320 +            concepts = batch["concepts"].to(self.device, non_blocking=True)
+    321 +            concept_mask = batch["has_concepts"].to(self.device, non_blocking=True)
+    322 +            if not bool(concept_mask.any()):
+    323 +                continue
+    324 +
+    325 +            self.optimizer.zero_grad(set_to_none=True)
+    326 +            with torch.autocast(
+    327 +                device_type=self.device.type,
+    328 +                enabled=self.config.optim.amp and self.device.type == "cuda",
+    329 +            ):
+    330 +                output = self.model(
+    331 +                    images,
+    332 +                    priors=self.prior_table,
+    333 +                    reliability=(
+    334 +                        reliability if self.config.loss.match_reliability_weighted else None
+    335 +                    ),
+    336 +                )
+    337 +                loss = self.audit_concept_loss(
+    338 +                    output.concept_logits,
+    339 +                    concepts,
+    340 +                    labels,
+    341 +                    concept_mask,
+    342 +                    reliability,
+    343 +                )
+    344 +                weighted = self.config.loss.lambda_audit_concept * loss
+    345 +
+    346 +            scaler.scale(weighted).backward()
+    347 +            if self.config.optim.grad_clip is not None:
+    348 +                scaler.unscale_(self.optimizer)
+    349 +                torch.nn.utils.clip_grad_norm_(
+    350 +                    list(self.model.parameters()), self.config.optim.grad_clip
+    351 +                )
+    352 +            scaler.step(self.optimizer)
+    353 +            scaler.update()
+    354 +
+    355 +            total_loss += float(loss.detach())
+    356 +            n_batches += 1
+    357 +
+    358 +        if n_batches == 0:
+    359 +            return {}
+    360 +        mean_loss = total_loss / n_batches
+    361 +        return {
+    362 +            "train/loss_audit_concept": mean_loss,
+    363 +            "train/loss_audit_concept_weighted": self.config.loss.lambda_audit_concept
+    364 +            * mean_loss,
+    365 +        }
+    366 +
+    367 +    def audit_concept_loss(
+    368 +        self,
+    369 +        logits: torch.Tensor,
+    370 +        concepts: torch.Tensor,
+    371 +        labels: torch.Tensor,
+    372 +        concept_mask: torch.Tensor,
+    373 +        reliability: torch.Tensor,
+    374 +    ) -> torch.Tensor:
+    375 +        losses = F.binary_cross_entropy_with_logits(
+    376 +            logits, concepts.float(), reduction="none"
+    377 +        )
+    378 +        row_mask = concept_mask.float().view(-1, 1)
+    379 +        match self.config.loss.audit_concept_weighting:
+    380 +            case "none":
+    381 +                weights = torch.ones_like(losses)
+    382 +            case "inverse_reliability":
+    383 +                weights = 1.0 - reliability.to(logits.device).index_select(1, labels).t()
+    384 +            case other:
+    385 +                raise ValueError(f"Unknown loss.audit_concept_weighting='{other}'")
+    386 +        weighted = losses * weights * row_mask
+    387 +        denominator = (weights * row_mask).sum().clamp_min(1.0)
+    388 +        return weighted.sum() / denominator
+    389
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The code changes are in. I’ll run a syntax check and a very small synthetic training smoke test with audit anchoring enabled so we know the new loss path executes.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 -m py_compile rpcp/training/trainer.py rpcp/config.py
+  └ (no output)
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 scripts/train.py --config configs/synthetic.yaml --method r-pcp-audit -o optim.epochs=2 reliability.warmup_epochs=0 reliability.mid_epochs=1 data.audit_fraction=0.1 loss.lambda_audit_concept=0.1
+  │ loss.audit_concept_weighting=inverse_reliability eval.save_checkpoints=false data.synthetic.n_train=120 data.synthetic.n_val=60 data.synthetic.n_test=60 data.batch_size=32 data.eval_batch_size=32 model.backbone=simple_cnn
+  └ [2026-08-18 15:53:24,098] INFO    rpcp.data | Split sizes for 'synthetic': {'train': 95, 'val': 60, 'test': 60, 'audit': 25}
+    [2026-08-18 15:53:24,116] INFO    rpcp.data | Prior table: mode=none alpha=0.00 fraction=0.30 -> 0.0% of entries corrupted
+    … +52 lines (ctrl + t to view transcript)
+      }
+    }
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• One more practical issue: if you pass loss.lambda_audit_concept as a global override in a multi-method run, pcp would also receive audit concept labels, which would contaminate the baseline. I’m adding explicit anchored method presets so you can compare pcp against
+  anchored audit/oracle methods cleanly in one command.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Explored
+  └ Read methods.py
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’ll add r-pcp-audit-anchor and oracle-anchor as named methods. They turn on audit repair, inverse-reliability audit BCE, reliability-gated matching/class-head use, and avoid the corrupted prior matching loss by default.
+
+• Edited rpcp/methods.py (+24 -0)
+    57      },
+    58 +    # R-PCP + audit repair + image-level audit concept anchors.
+    59 +    "r-pcp-audit-anchor": {
+    60 +        "reliability.mode": "audit",
+    61 +        "data.audit_fraction": 0.1,
+    62 +        "loss.lambda_concept": 0.0,
+    63 +        "loss.lambda_audit_concept": 1.0,
+    64 +        "loss.audit_concept_weighting": "inverse_reliability",
+    65 +        "loss.prior_repair": "audit",
+    66 +        "loss.match_reliability_weighted": True,
+    67 +        "loss.lambda_match": 0.0,
+    68 +        "model.class_head": "linear",
+    69 +    },
+    70      # 7. Oracle reliability: uses the true corruption mask (upper bound).
+       ⋮
+    74      },
+    75 +    # Oracle reliability plus the same audit anchor, for the upper-bound variant.
+    76 +    "oracle-anchor": {
+    77 +        "reliability.mode": "oracle",
+    78 +        "data.audit_fraction": 0.1,
+    79 +        "loss.lambda_concept": 0.0,
+    80 +        "loss.lambda_audit_concept": 1.0,
+    81 +        "loss.audit_concept_weighting": "inverse_reliability",
+    82 +        "loss.prior_repair": "audit",
+    83 +        "loss.match_reliability_weighted": True,
+    84 +        "loss.lambda_match": 0.0,
+    85 +        "model.class_head": "linear",
+    86 +    },
+    87      # Evidence Mode D, only meaningful on multi-rater datasets (LIDC-IDRI).
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The anchored methods are now named presets, so the baseline stays clean. I’ll quickly verify the new method names are accepted and the anchored path runs in a tiny synthetic job.
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• PreToolUse hook (failed)
+  error: hook returned invalid pre-tool-use JSON output
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 - <<'PY'
+  │ from rpcp.methods import METHODS
+  │ print('r-pcp-audit-anchor' in METHODS, 'oracle-anchor' in METHODS)
+  │ … +2 lines
+  └ True True
+    {'reliability.mode': 'audit', 'data.audit_fraction': 0.1, 'loss.lambda_concept': 0.0, 'loss.lambda_audit_concept': 1.0, 'loss.audit_concept_weighting': 'inverse_reliability', 'loss.prior_repair': 'audit', 'loss.match_reliability_weighted': True,
+    'loss.lambda_match': 0.0, 'model.class_head': 'linear'}
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+• Ran PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 scripts/train.py --config configs/synthetic.yaml --method r-pcp-audit-anchor -o optim.epochs=1 reliability.warmup_epochs=0 reliability.mid_epochs=0 eval.save_checkpoints=false data.synthetic.n_train=90
+  │ data.synthetic.n_val=45 data.synthetic.n_test=45 data.batch_size=32 data.eval_batch_size=32 model.backbone=simple_cnn
+  └ [2026-08-18 15:54:13,663] INFO    rpcp.data | Split sizes for 'synthetic': {'train': 70, 'val': 46, 'test': 46, 'audit': 18}
+    [2026-08-18 15:54:13,680] INFO    rpcp.data | Prior table: mode=none alpha=0.00 fraction=0.30 -> 0.0% of entries corrupted
+    … +51 lines (ctrl + t to view transcript)
+      }
+    }
+
+• PostToolUse hook (failed)
+  error: PostToolUse hook returned unsupported suppressOutput
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I fixed the implementation around the actual failure mode.
+
+  What changed:
+
+  - Added audit image-level concept anchoring:
+      - loss.lambda_audit_concept
+      - loss.audit_concept_weighting=none|inverse_reliability
+
+  - Added named methods:
+      - r-pcp-audit-anchor
+      - oracle-anchor
+
+  - These methods use:
+      - audit prior repair
+      - audit concept BCE
+      - inverse reliability weighting
+      - model.class_head=linear
+      - loss.lambda_match=0.0
+
+  This avoids the corrupted prior matching path and directly tests whether image-level audit anchoring fixes the concept-head failure.
+
+  Run this:
+
+  python3 scripts/train.py --config configs/derm7pt.yaml \
+    --method '[pcp,r-pcp-audit,r-pcp-audit-anchor,oracle-anchor]' \
+    -o data.root=/kaggle/input/datasets/salam035/derm7pt/derm7pt \
+       model.backbone=densenet121 model.pretrained=true \
+       data.image_size=224 data.batch_size=16 data.eval_batch_size=32 data.num_workers=0 \
+       optim.epochs=30 optim.lr=0.00005 optim.backbone_lr=0.000005 optim.grad_clip=0.5 \
+       reliability.warmup_epochs=8 reliability.mid_epochs=14 reliability.n_folds=1 \
+       data.audit_fraction=0.1 \
+       priors.corruption.mode=adversarial_flip priors.corruption.alpha=1.0 priors.corruption.fraction=0.5 \
+       eval.concept_threshold=0.2 \
+       eval.save_checkpoints=true
+
+  Then diagnose the anchored run:
+
+  python3 scripts/diagnose_run.py \
+    --run-dir runs/rpcp-derm7pt-r-pcp-audit-anchor_seed0 \
+    --split test
+
+  What to look for:
+
+  r-pcp-audit-anchor concept AUROC/F1 > r-pcp-audit
+  oracle-anchor > pcp
+  predicted_class_mean closer to true_class_mean
+  concept_summary positive probabilities > negative probabilities
+
+  If r-pcp-audit-anchor improves while r-pcp-audit does not, the diagnosis is confirmed: prior repair was fine, but image-level anchoring was missing.
+
+  If even oracle-anchor fails, then the audit set/labels or concept head design is the next bottleneck.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+
+─ Worked for 2m 21s ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› '/Users/salam/Downloads/kaggle 2/working/rpcp/runs has before and after files, all there. let me know what the hell is wrong. do we need to change the concept bottlenek part? or what?
+
+
+⚠ Error running remote compact task: Selected model is at capacity. Please try a different model.
+
+■ '/model' is unavailable in side conversations. Press Ctrl+C to return to the main thread first.
+
+
+› '/Users/salam/Downloads/kaggle 2/working/rpcp/runs has before and after files, all there. let me know what the hell is wrong. do we need to change the concept bottlenek part? or what?
+
+
+• Context compacted
+
+⚠ Selected model is at capacity. Please try a different model.
+
+/usage daily
+
+ Token activity   last 12 months
+ Lifetime 50.5M · Peak 11.7M · Streak 2d (best 5d) · Longest task 39m
+
+        Sep     Oct     Nov       Dec     Jan     Feb     Mar       Apr     May       Jun     Jul     Aug
+ Su ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+ Mo ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+ Tu ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+ We ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+ Th ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+ Fr ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+ Sa ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+
+   Less ■ ■ ■ ■ ■ More
+   daily · weekly · cumulative
+
+ 
+› Check recently modified functions for compatibility
+ 
+  gpt-5.5 high · /Volumes/Salam_SSD/research/rpcp · Agent                                                                                                                                                   Side from main thread · ctrl + / to switch · ctrl + c to close
+
+
+
+
+
+
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / 
+  python3 scripts/train.py --config configs/derm7pt.yaml \
+    --method '[pcp,r-pcp-audit,r-pcp-audit-anchor,oracle-anchor]' \
+    -o data.root=/kaggle/input/datasets/salam035/derm7pt/derm7pt \
+       model.backbone=densenet121 model.pretrained=true \
+       data.image_size=224 data.batch_size=16 data.eval_batch_size=32 data.num_workers=0 \
+       optim.epochs=30 optim.lr=0.00005 optim.backbone_lr=0.000005 optim.grad_clip=0.5 \
+       reliability.warmup_epochs=8 reliability.mid_epochs=14 reliability.n_folds=1 \
+       data.audit_fraction=0.1 \
+       priors.corruption.mode=adversarial_flip priors.corruption.alpha=1.0 priors.corruption.fraction=0.5 \
+       eval.concept_threshold=0.2 \
+       eval.save_checkpoints=true
+
+  Then diagnose the anchored run:
+
+  python3 scripts/diagnose_run.py \
+    --run-dir runs/rpcp-derm7pt-r-pcp-audit-anchor_seed0 \
+    --split test
+
+  What to look for:
+
+  r-pcp-audit-anchor concept AUROC/F1 > r-pcp-audit
+  oracle-anchor > pcp
+  predicted_class_mean closer to true_class_mean
+  concept_summary positive probabilities > negative probabilities
+
+  If r-pcp-audit-anchor improves while r-pcp-audit does not, the diagnosis is confirmed: prior repair was fine, but image-level anchoring was missing.
+
+  If even oracle-anchor fails, then the audit set/labels or concept head design is the next bottleneck.
+
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output

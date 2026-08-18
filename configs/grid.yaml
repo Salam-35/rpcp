@@ -1,0 +1,24 @@
+name: derm7pt_grid
+config: configs/derm7pt.yaml
+output_dir: runs
+seeds: [0]
+log_level: INFO
+
+methods:
+  - pcp
+  - r-pcp-audit-plain
+  - r-pcp-audit
+  - oracle-anchor
+
+override:
+  data.root: /kaggle/input/datasets/salam035/derm7pt/derm7pt
+  data.batch_size: 16
+  data.eval_batch_size: 32
+  data.num_workers: 0
+  data.audit_fraction: 0.1
+
+grid:
+  eval.concept_threshold: [0.2]
+  priors.corruption.mode: [adversarial_flip]
+  priors.corruption.alpha: [1.0]
+  priors.corruption.fraction: [0.5]
